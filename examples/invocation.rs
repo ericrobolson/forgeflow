@@ -5,11 +5,11 @@ fn main() {
 
     let prompt = "What's 1+1";
     println!("Codex:");
-    Agent::codex().ask(prompt).unwrap();
+    println!("{}", Agent::codex().ask(prompt).unwrap());
 
     println!("Claude:");
-    Agent::claude().ask(prompt).unwrap();
+    println!("{}", Agent::claude().ask(prompt).unwrap());
 
     println!("Opencode:");
-    Agent::opencode().ask(prompt).unwrap();
+    println!("{}", Agent::opencode().ask(prompt).unwrap());
 }

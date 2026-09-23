@@ -59,19 +59,52 @@ impl Agent {
         Self::new(Provider::Opencode)
     }
 
-    pub fn ask(&self, prompt: &str) -> std::io::Result<()> {
+    pub fn ask(&self, prompt: &str) -> std::io::Result<String> {
         let mut child = Self::child(self.provider, prompt)?;
         let stdout = child.stdout.take().expect("stdout was piped");
+        let mut response = String::new();
         for line in io::BufReader::new(stdout).lines() {
-            println!("{}", line?);
+            let line = line?;
+            if let Some(text) = Self::response_text(self.provider, &line)? {
+                response.push_str(&text);
+            }
         }
 
         let status = child.wait()?;
         if !status.success() {
-            eprintln!("{} exited with {}", self.provider.to_str(), status);
+            return Err(io::Error::other(format!(
+                "{} exited with {}",
+                self.provider.to_str(), status
+            )));
         }
 
-        Ok(())
+        Ok(response)
+    }
+
+    fn response_text(provider: Provider, line: &str) -> io::Result<Option<String>> {
+        let event: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} returned invalid JSON output: {error}", provider.to_str()),
+            )
+        })?;
+
+        let text = match provider {
+            Provider::Codex => event
+                .get("item")
+                .filter(|item| item.get("type").and_then(|v| v.as_str()) == Some("agent_message"))
+                .and_then(|item| item.get("text"))
+                .and_then(serde_json::Value::as_str),
+            Provider::Claude => event.get("result").and_then(serde_json::Value::as_str),
+            Provider::Opencode => event
+                .get("type")
+                .filter(|kind| kind.as_str() == Some("text"))
+                .and_then(|_| event.get("part"))
+                .and_then(|part| part.get("text"))
+                .and_then(serde_json::Value::as_str),
+        };
+
+        Ok(text.map(str::to_owned))
     }
 
     fn child(provider: Provider, prompt: &str) -> Result<Child, std::io::Error> {

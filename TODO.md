@@ -1,0 +1,5 @@
+- [x] Build out a definition for a Forth like, strongly and statically typed, concatenative language for interacting with agents
+- [x] Build out a runtime to process it
+- [ ] Add swap/swizzle/etc
+- [ ] Add a visualizer/editor so as you move your cursor over a word it'll show the stack and any errors visually
+- [ ] Build out a parser to parse programs
