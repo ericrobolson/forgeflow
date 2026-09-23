@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufRead},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 pub struct Agent {}
@@ -10,11 +10,8 @@ impl Agent {
         Self {}
     }
 
-    pub fn claude(&self, prompt: &str) -> std::io::Result<()> {
-        let mut child = Command::new("claude")
-            .args(["-p", "--output-format", "stream-json", "--verbose", prompt])
-            .stdout(Stdio::piped())
-            .spawn()?;
+    fn call(&self, command: &mut Command, kind: &str, prompt: &str) -> std::io::Result<()> {
+        let mut child = command.stdout(Stdio::piped()).spawn()?;
 
         let stdout = child.stdout.take().expect("stdout was piped");
         for line in io::BufReader::new(stdout).lines() {
@@ -23,47 +20,39 @@ impl Agent {
 
         let status = child.wait()?;
         if !status.success() {
-            eprintln!("Claude exited with {status}");
+            eprintln!("{} exited with {}", kind, status);
         }
 
         Ok(())
+    }
+
+    pub fn claude(&self, prompt: &str) -> std::io::Result<()> {
+        self.call(
+            Command::new("claude").args([
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+                prompt,
+            ]),
+            "claude",
+            prompt,
+        )
     }
 
     pub fn opencode(&self, prompt: &str) -> std::io::Result<()> {
-        let mut child = Command::new("opencode")
-            .args(["run", "--format", "json", prompt])
-            .stdout(Stdio::piped())
-            .spawn()?;
-
-        let stdout = child.stdout.take().expect("stdout was piped");
-        for line in io::BufReader::new(stdout).lines() {
-            println!("{}", line?);
-        }
-
-        let status = child.wait()?;
-        if !status.success() {
-            eprintln!("Opencode exited with {status}");
-        }
-
-        Ok(())
+        self.call(
+            Command::new("opencode").args(["run", "--format", "json", prompt]),
+            "opencode",
+            prompt,
+        )
     }
 
     pub fn codex(&self, prompt: &str) -> std::io::Result<()> {
-        let mut child = Command::new("codex")
-            .args(["exec", "--json", prompt])
-            .stdout(Stdio::piped())
-            .spawn()?;
-
-        let stdout = child.stdout.take().expect("stdout was piped");
-        for line in io::BufReader::new(stdout).lines() {
-            println!("{}", line?); // Each JSON event, as it arrives
-        }
-
-        let status = child.wait()?;
-        if !status.success() {
-            eprintln!("Codex exited with {status}");
-        }
-
-        Ok(())
+        self.call(
+            Command::new("codex").args(["exec", "--json", prompt]),
+            "codex",
+            prompt,
+        )
     }
 }
