@@ -29,6 +29,25 @@ impl Agent {
         Ok(())
     }
 
+    pub fn opencode(&self, prompt: &str) -> std::io::Result<()> {
+        let mut child = Command::new("opencode")
+            .args(["run", "--format", "json", prompt])
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        let stdout = child.stdout.take().expect("stdout was piped");
+        for line in io::BufReader::new(stdout).lines() {
+            println!("{}", line?);
+        }
+
+        let status = child.wait()?;
+        if !status.success() {
+            eprintln!("Opencode exited with {status}");
+        }
+
+        Ok(())
+    }
+
     pub fn codex(&self, prompt: &str) -> std::io::Result<()> {
         let mut child = Command::new("codex")
             .args(["exec", "--json", prompt])

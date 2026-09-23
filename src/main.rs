@@ -11,4 +11,7 @@ fn main() {
 
     println!("Claude:");
     agent.claude(prompt).unwrap();
+
+    println!("Opencode:");
+    agent.opencode(prompt).unwrap();
 }
