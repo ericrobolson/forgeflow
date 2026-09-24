@@ -1,6 +1,8 @@
 pub mod agent;
 pub mod ops;
+pub mod parser;
 pub mod project;
+pub mod repl;
 pub mod type_;
 pub mod util;
 pub mod value;
