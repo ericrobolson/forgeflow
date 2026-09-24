@@ -30,6 +30,8 @@ pub enum TokenKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
+    /// Name of the source file or REPL submission this token came from.
+    pub source_name: std::sync::Arc<str>,
     /// UTF-8 byte offsets into `Source::text`, covering the original token.
     pub span: Range<usize>,
 }
@@ -52,7 +54,8 @@ fn classify_atom<'src>(
     if let Ok(value) = atom.parse::<i64>() {
         return Ok(TokenKind::Integer(value));
     }
-    if atom.contains('.') || atom.contains('e') || atom.contains('E') {
+    let has_digit = atom.chars().any(|ch| ch.is_ascii_digit());
+    if has_digit && (atom.contains('.') || atom.contains('e') || atom.contains('E')) {
         let normalized = normalize_float(&atom);
         return normalized
             .parse::<f64>()
@@ -144,13 +147,19 @@ fn lexer<'src>() -> impl Parser<
 pub fn parse(source: &Source) -> Result<ParseOutput, Vec<ParseError>> {
     match lexer().parse(source.text.as_str()).into_result() {
         Ok(parsed) => Ok(ParseOutput {
-            tokens: parsed
-                .into_iter()
-                .map(|(kind, span)| Token {
-                    kind,
-                    span: span.start..span.end,
-                })
-                .collect(),
+            // Clone one shared source name for all tokens instead of allocating
+            // a separate filename string for every token.
+            tokens: {
+                let source_name: std::sync::Arc<str> = source.name.clone().into();
+                parsed
+                    .into_iter()
+                    .map(|(kind, span)| Token {
+                        kind,
+                        source_name: source_name.clone(),
+                        span: span.start..span.end,
+                    })
+                    .collect()
+            },
         }),
         Err(errors) => Err(errors
             .into_iter()
@@ -170,7 +179,10 @@ pub fn format_token(token: &Token) -> String {
         TokenKind::Comment(value) => format!("Comment({value:?})"),
         TokenKind::Identifier(value) => format!("Identifier({value})"),
     };
-    format!("{}..{} {kind}", token.span.start, token.span.end)
+    format!(
+        "{}:{}..{} {kind}",
+        token.source_name, token.span.start, token.span.end
+    )
 }
 
 pub fn print_errors(source: &Source, errors: &[ParseError]) {
@@ -215,6 +227,7 @@ mod tests {
         assert_eq!(parsed.tokens[6].kind, TokenKind::Identifier("dup".into()));
         assert_eq!(parsed.tokens[7].kind, TokenKind::Comment(" comment".into()));
         for token in parsed.tokens {
+            assert_eq!(token.source_name.as_ref(), "test.ff");
             assert!(token.span.start < token.span.end);
             assert!(src.text.is_char_boundary(token.span.start));
             assert!(src.text.is_char_boundary(token.span.end));
@@ -248,5 +261,143 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn comments_stop_at_lf_crlf_and_cr() {
+        let src = Source::new(
+            "comments.ff",
+            "# first\nsecond # middle\r\nthird # final\rfourth",
+        );
+        let tokens = parse(&src).unwrap().tokens;
+        let values: Vec<_> = tokens
+            .iter()
+            .map(|token| match &token.kind {
+                TokenKind::Comment(comment) => format!("#{comment}"),
+                TokenKind::Identifier(identifier) => identifier.clone(),
+                other => panic!("unexpected token: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            values,
+            [
+                "# first", "second", "# middle", "third", "# final", "fourth"
+            ]
+        );
+    }
+
+    #[test]
+    fn comments_and_strings_end_at_their_own_delimiters() {
+        let src = Source::new("boundaries.ff", "\"# not a comment\"# real comment\nnext");
+        let tokens = parse(&src).unwrap().tokens;
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].kind, TokenKind::String("# not a comment".into()));
+        assert_eq!(tokens[1].kind, TokenKind::Comment(" real comment".into()));
+        assert_eq!(tokens[2].kind, TokenKind::Identifier("next".into()));
+    }
+
+    #[test]
+    fn accepts_signed_integer_limits_and_decimal_exponent_forms() {
+        let src = Source::new(
+            "numbers.ff",
+            "9223372036854775807 -9223372036854775808 +12 .5 -.5 1. 1.e2 2e-3 -2.5E+3",
+        );
+        let tokens = parse(&src).unwrap().tokens;
+        assert_eq!(tokens[0].kind, TokenKind::Integer(i64::MAX));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(i64::MIN));
+        assert_eq!(tokens[2].kind, TokenKind::Integer(12));
+        let floats: Vec<f64> = tokens[3..]
+            .iter()
+            .map(|token| match token.kind {
+                TokenKind::Float(value) => value,
+                ref other => panic!("expected float, got {other:?}"),
+            })
+            .collect();
+        let expected = [0.5, -0.5, 1.0, 100.0, 0.002, -2500.0];
+        for (actual, expected) in floats.iter().zip(expected) {
+            assert!((actual - expected).abs() <= f64::EPSILON * expected.abs().max(1.0));
+        }
+    }
+
+    #[test]
+    fn malformed_numeric_looking_atoms_are_errors_but_forth_symbols_are_identifiers() {
+        for malformed in ["9223372036854775808", "1e", "1e+", "1..2", "--2"] {
+            assert!(
+                parse(&Source::new("bad-number.ff", malformed)).is_err(),
+                "expected {malformed:?} to fail"
+            );
+        }
+        let tokens = parse(&Source::new("words.ff", ". + - * / dup? word-name"))
+            .unwrap()
+            .tokens;
+        let words: Vec<_> = tokens
+            .into_iter()
+            .map(|token| match token.kind {
+                TokenKind::Identifier(word) => word,
+                other => panic!("expected identifier, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(words, [".", "+", "-", "*", "/", "dup?", "word-name"]);
+    }
+
+    #[test]
+    fn decodes_supported_escapes_and_rejects_incomplete_or_raw_newline_strings() {
+        let source = Source::new(
+            "strings.ff",
+            "\"quote: \\\" slash: \\\\ line:\\n tab:\\t return:\\r\"",
+        );
+        let tokens = parse(&source).unwrap().tokens;
+        assert_eq!(
+            tokens[0].kind,
+            TokenKind::String("quote: \" slash: \\ line:\n tab:\t return:\r".into())
+        );
+        for invalid in ["\"dangling\\", "\"raw\nnewline\"", "\"unknown\\x\""] {
+            assert!(
+                parse(&Source::new("bad-string.ff", invalid)).is_err(),
+                "expected {invalid:?} to fail"
+            );
+        }
+        assert_eq!(
+            parse(&Source::new("empty-string.ff", "\"\""))
+                .unwrap()
+                .tokens[0]
+                .kind,
+            TokenKind::String(String::new())
+        );
+    }
+
+    #[test]
+    fn spans_are_utf8_byte_ranges_over_original_tokens() {
+        let src = Source::new("unicode.ff", "λ # 雪\n\"é\"");
+        let tokens = parse(&src).unwrap().tokens;
+        assert_eq!(&src.text[tokens[0].span.clone()], "λ");
+        assert_eq!(&src.text[tokens[1].span.clone()], "# 雪");
+        assert_eq!(&src.text[tokens[2].span.clone()], "\"é\"");
+        assert_eq!(tokens[0].span, 0..2);
+        assert_eq!(tokens[1].span, 3..8);
+        assert_eq!(tokens[2].span, 9..13);
+    }
+
+    #[test]
+    fn lexer_accepts_adjacent_tokens_and_all_common_whitespace() {
+        let src = Source::new("spacing.ff", "1\t\n\r\u{000B}\u{000C}2\"s\"word");
+        let tokens = parse(&src).unwrap().tokens;
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(tokens[0].kind, TokenKind::Integer(1));
+        assert_eq!(tokens[1].kind, TokenKind::Integer(2));
+        assert_eq!(tokens[2].kind, TokenKind::String("s".into()));
+        assert_eq!(tokens[3].kind, TokenKind::Identifier("word".into()));
+    }
+
+    #[test]
+    fn parse_errors_have_in_bounds_spans_and_useful_messages() {
+        let src = Source::new("error.ff", "prefix \"unterminated");
+        let errors = parse(&src).unwrap_err();
+        assert!(!errors.is_empty());
+        for error in errors {
+            assert!(error.span.start <= error.span.end);
+            assert!(error.span.end <= src.text.len());
+            assert!(!error.message.is_empty());
+        }
     }
 }
