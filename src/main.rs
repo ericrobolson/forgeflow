@@ -1,6 +1,13 @@
+use forgeflow::{project::Project, util};
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    println!("Args: {:?}", args);
     let working_dir = std::env::current_dir().unwrap();
-    println!("working out of {:?}", working_dir);
+
+    if !Project::exists() && !util::confirmation("Project not found. Create one?") {
+        println!("Not creating project.");
+        return;
+    }
+
+    let project = Project::initialize(&working_dir);
 }

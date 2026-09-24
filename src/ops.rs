@@ -1,10 +1,10 @@
 use crate::{
     agent::{self, Agent},
     type_::Type,
+    util,
     value::Value,
     workflow::*,
 };
-use std::io::{self};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ops {
@@ -24,11 +24,7 @@ impl Ops {
             Ops::AllCliArgs => todo!(),
             Ops::WriteFile => todo!(),
             Ops::ReadLine => {
-                let mut answer = String::new();
-                match io::stdin().read_line(&mut answer) {
-                    Ok(_) => {}
-                    Err(e) => return Err(format!("{:?}", e)),
-                }
+                let answer = util::read_line()?;
                 stack.push(Value::String(answer));
             }
             Ops::AskLlm => {

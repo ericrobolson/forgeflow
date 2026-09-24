@@ -1,5 +1,7 @@
 - [x] Build out a definition for a Forth like, strongly and statically typed, concatenative language for interacting with agents
 - [x] Build out a runtime to process it
+- [x] Add a project concept + initialization.
+- [ ] Add loading of source files or scaffolding of them + durable workflow state for things like agentic pipelines
 - [ ] Add swap/swizzle/etc
 - [ ] Add memory
 - [ ] Add function definitions
