@@ -1,7 +1,7 @@
-use forgeflow::{agent, workflow::*};
+use forgeflow::{agent, ops::Ops, workflow::*};
 
 fn main() {
-    use StepDefinition::*;
+    use Ops::*;
     let workflow = WorkflowDefinition {
         agent_provider: agent::Provider::Codex,
         name: "Example Workflow".to_string(),
