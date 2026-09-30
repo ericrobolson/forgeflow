@@ -25,3 +25,12 @@
 - [ ] Archive words (find_symbols, show_symbol, reindex) ported from flowforge
 - [ ] `bench` word: measure real tokens/s and replace the estimate
 - [ ] Batch compaction of old `reg_view` results when the context fills
+
+
+## User-defined words
+
+- [ ] Add Forth-style word definitions that compose built-in and user-defined operations. Give each word a checked stack effect, support calls between definitions, and reject duplicate or unknown words clearly. This should ideally be done at load time. Add a 'reload' command to reload the source code for hot reloading.
+
+## Typed entity data for small games
+
+- [ ] Add game entities with typed fields for integers, booleans, strings, and collections. Provide operations to create entities, read and update fields, and persist the world so a small ForgeFlow game can define its rules as user-defined words.

@@ -34,6 +34,7 @@ pub struct Conversation {
     context: Context,
     backend: OpenAiCompatible,
     history: Vec<Exchange>,
+    context_limit: u64,
     styled: bool,
 }
 
@@ -53,11 +54,12 @@ pub fn run(mut context: Context) -> Result<(), Box<dyn Error>> {
         println!("ForgeFlow. Send a message; prefix a program with ; to compile and run it; Ctrl+D to exit.");
     }
     // Start the model server now so the first message does not wait for it.
-    let (backend, _) = chat::connect(&mut context)?;
+    let (backend, config) = chat::connect(&mut context)?;
     let mut conversation = Conversation {
         context,
         backend,
         history: vec![],
+        context_limit: config.ctx,
         styled: io::stdout().is_terminal(),
     };
     if terminal {
@@ -101,6 +103,11 @@ impl Conversation {
     fn command(&mut self, message: &str) {
         let words: Vec<&str> = message.split_whitespace().collect();
         let result = match words.as_slice() {
+            ["/clear"] => {
+                self.history.clear();
+                println!("Conversation cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
+                Ok(())
+            }
             ["/model"] => {
                 let current = Config::load(&self.context.project.folder())
                     .ok()
@@ -117,7 +124,7 @@ impl Conversation {
             ["/models"] => workflow::run_steps(&mut self.context, &[Ops::Models]),
             ["/pull", id] => models::pull(id, &mut io::stderr()).map(|_| ()),
             _ => Err(format!(
-                "unknown command `{message}`; try /model, /model <id>, /models, /pull <id>, or /help"
+                "unknown command `{message}`; try /clear, /model, /model <id>, /models, /pull <id>, or /help"
             )),
         };
         if let Err(error) = result {
@@ -192,6 +199,7 @@ impl Conversation {
         );
         match turn {
             Ok(turn) => {
+                let assistant_chars = turn.content.len();
                 if !output.is_empty() {
                     println!();
                 }
@@ -203,6 +211,11 @@ impl Conversation {
                     program: String::new(),
                     output: turn.content,
                 });
+                let prompt_chars: usize = messages.iter().map(|m| m.to_string().len()).sum::<usize>()
+                    + assistant_chars;
+                let estimated_used = (prompt_chars as u64).div_ceil(4);
+                let remaining = self.context_limit.saturating_sub(estimated_used);
+                println!("{}", self.dim(&format!("~{remaining} context tokens remaining (estimated)")));
             }
             Err(error) => eprintln!("error: {error}"),
         }
