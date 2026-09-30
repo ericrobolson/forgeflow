@@ -1,9 +1,12 @@
 use std::{error::Error, fs, io, path::Path};
 
 use forgeflow::{
+    agent::Provider,
+    ops::Ops,
     parser::{self, ParseOutput, Source},
     project::Project,
-    util,
+    util, words,
+    workflow::{self, Context},
 };
 
 fn parse_and_report(source: &Source, show_tokens: bool) -> Result<ParseOutput, ()> {
@@ -23,11 +26,16 @@ fn parse_and_report(source: &Source, show_tokens: bool) -> Result<ParseOutput, (
     }
 }
 
-fn run_file(path: &Path) -> Result<(), Box<dyn Error>> {
+fn run_file(path: &Path, mut context: Context) -> Result<(), Box<dyn Error>> {
     let source = read_source(path)?;
-    parse_and_report(&source, true)
-        .map(|_| ())
-        .map_err(|_| "source parse failed".into())
+    let parsed = parse_and_report(&source, false).map_err(|_| "source parse failed")?;
+    let steps = words::compile(&parsed.tokens).map_err(|errors| {
+        parser::print_errors(&source, &errors);
+        "source compile failed"
+    })?;
+    workflow::check_steps(vec![], &steps)?;
+    workflow::run_steps(&mut context, &steps)?;
+    Ok(())
 }
 
 fn read_source(path: &Path) -> io::Result<Source> {
@@ -43,17 +51,34 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Not creating project.");
         return Ok(());
     }
-    let _project = Project::initialize(&working_dir);
+    let project = Project::initialize(&working_dir)?;
+    let context = Context::new(project, Provider::Claude)?;
 
-    let mut args = std::env::args_os().skip(1);
-    match (args.next(), args.next()) {
-        (Some(path), None) => run_file(Path::new(&path)),
-        (None, None) => forgeflow::repl::run(),
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match args.as_slice() {
+        [] => forgeflow::messages::run(context),
+        ["models"] => run_words(context, vec![Ops::Models]),
+        ["pull", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::Pull]),
+        ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
+        [path] if !path.starts_with('-') && *path != "help" => run_file(Path::new(path), context),
         _ => {
-            eprintln!("Usage: forgeflow [SOURCE_FILE]");
-            Err("expected at most one source file".into())
+            eprintln!("{USAGE}");
+            Err("unrecognized arguments".into())
         }
     }
+}
+
+const USAGE: &str = "Usage:
+  forgeflow              chat: each message becomes a program that runs deterministically
+  forgeflow models       list local models with fit and speed estimates
+  forgeflow pull <id>    download a model
+  forgeflow use <id>     select the model
+  forgeflow <file.ff>    run a ForgeFlow program";
+
+fn run_words(mut context: Context, steps: Vec<Ops>) -> Result<(), Box<dyn Error>> {
+    workflow::run_steps(&mut context, &steps)?;
+    Ok(())
 }
 
 #[cfg(test)]

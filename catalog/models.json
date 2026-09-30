@@ -1,0 +1,523 @@
+[
+  {
+    "id": "qwen2.5-0.5b-q4km",
+    "name": "Qwen2.5 0.5B Instruct",
+    "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    "size_bytes": 491400032,
+    "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+    "params_b": 0.49,
+    "active_params_b": 0.49,
+    "layers": 24,
+    "kv_heads": 2,
+    "head_dim": 64,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "tiny"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen2.5-1.5b-q4km",
+    "name": "Qwen2.5 1.5B Instruct",
+    "repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+    "file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "size_bytes": 1117320736,
+    "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+    "params_b": 1.54,
+    "active_params_b": 1.54,
+    "layers": 28,
+    "kv_heads": 2,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "tiny"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "dolphin3.0-qwen2.5-3b-q4km",
+    "name": "Dolphin 3.0 Qwen2.5 3B",
+    "repo": "bartowski/Dolphin3.0-Qwen2.5-3b-GGUF",
+    "file": "Dolphin3.0-Qwen2.5-3b-Q4_K_M.gguf",
+    "size_bytes": 1929906144,
+    "sha256": "0cb1908c5f444e1dc2c5b5619d62ac4957a22ad39cd42f2d0b48e2d8b1c358ab",
+    "params_b": 3.09,
+    "active_params_b": 3.09,
+    "layers": 36,
+    "kv_heads": 2,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "qwen-research",
+    "tags": [
+      "chat",
+      "uncensored",
+      "finetune"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "qwen3-4b-2507-heretic-q4km",
+    "name": "Qwen3 4B Instruct 2507 heretic",
+    "repo": "bartowski/p-e-w_Qwen3-4B-Instruct-2507-heretic-GGUF",
+    "file": "p-e-w_Qwen3-4B-Instruct-2507-heretic-Q4_K_M.gguf",
+    "size_bytes": 2497279424,
+    "sha256": "d4d7fcd11d36495fa340f91b514ae3a47f5da21cf27c158d620d736e3bb35a61",
+    "params_b": 4.02,
+    "active_params_b": 4.02,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 262144,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "uncensored",
+      "heretic"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-4b-q4km",
+    "name": "Qwen3 4B",
+    "repo": "Qwen/Qwen3-4B-GGUF",
+    "file": "Qwen3-4B-Q4_K_M.gguf",
+    "size_bytes": 2497280256,
+    "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+    "params_b": 4.0,
+    "active_params_b": 4.0,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-4b-2507-abliterated-q4km",
+    "name": "Qwen3 4B Instruct 2507 abliterated",
+    "repo": "mradermacher/Huihui-Qwen3-4B-Instruct-2507-abliterated-GGUF",
+    "file": "Huihui-Qwen3-4B-Instruct-2507-abliterated.Q4_K_M.gguf",
+    "size_bytes": 2497281312,
+    "sha256": "b1324e2f1bd2e0610d591f54f93e38d90b187f69d1f215f4cace349eade678d7",
+    "params_b": 4.02,
+    "active_params_b": 4.02,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 262144,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "dolphin-2.6-mistral-7b",
+    "name": "Dolphin 2.6 Mistral 7B",
+    "repo": "TheBloke/dolphin-2.6-mistral-7B-GGUF",
+    "file": "dolphin-2.6-mistral-7b.Q4_K_M.gguf",
+    "size_bytes": 4369381088,
+    "sha256": "6f3eab953bb44a2c309bcb52a81383e2cd05f197aa25d8a985ec8d9ffc664e1b",
+    "params_b": 7.24,
+    "active_params_b": 7.24,
+    "layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "uncensored",
+      "finetune"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "qwen2.5-coder-7b-q4km",
+    "name": "Qwen2.5 Coder 7B Instruct",
+    "repo": "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+    "file": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+    "size_bytes": 4683074336,
+    "sha256": "1664fccab734674a50763490a8c6931b70e3f2f8ec10031b54806d30e5f956b6",
+    "params_b": 7.6,
+    "active_params_b": 7.6,
+    "layers": 28,
+    "kv_heads": 4,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "code"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "llama3.1-8b-abliterated-q4km",
+    "name": "Llama 3.1 8B Instruct abliterated",
+    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-abliterated-GGUF",
+    "file": "Meta-Llama-3.1-8B-Instruct-abliterated-Q4_K_M.gguf",
+    "size_bytes": 4920734720,
+    "sha256": "c6be866583f7bddb437b8ccd988fc499c98f1846934a1f3d48de7777313057cb",
+    "params_b": 8.03,
+    "active_params_b": 8.03,
+    "layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 131072,
+    "license": "llama3.1",
+    "tags": [
+      "chat",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "llama3.1-8b-heretic-q4km",
+    "name": "Llama 3.1 8B Instruct heretic",
+    "repo": "bartowski/p-e-w_Llama-3.1-8B-Instruct-heretic-GGUF",
+    "file": "p-e-w_Llama-3.1-8B-Instruct-heretic-Q4_K_M.gguf",
+    "size_bytes": 4920739808,
+    "sha256": "c20ee9e64a904a551011f3bc2d0f63e7439a464441646a1f790aff8b169a679e",
+    "params_b": 8.03,
+    "active_params_b": 8.03,
+    "layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 131072,
+    "license": "llama3.1",
+    "tags": [
+      "chat",
+      "uncensored",
+      "heretic"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "dolphin3.0-llama3.1-8b-q4km",
+    "name": "Dolphin 3.0 Llama 3.1 8B",
+    "repo": "bartowski/Dolphin3.0-Llama3.1-8B-GGUF",
+    "file": "Dolphin3.0-Llama3.1-8B-Q4_K_M.gguf",
+    "size_bytes": 4920749472,
+    "sha256": "268390e07edd407ad93ea21a868b7ae995b5950e01cad0db9e1802ae5049d405",
+    "params_b": 8.03,
+    "active_params_b": 8.03,
+    "layers": 32,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 131072,
+    "license": "llama3.1",
+    "tags": [
+      "chat",
+      "uncensored",
+      "finetune"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "qwen3-8b-q4km",
+    "name": "Qwen3 8B",
+    "repo": "Qwen/Qwen3-8B-GGUF",
+    "file": "Qwen3-8B-Q4_K_M.gguf",
+    "size_bytes": 5027783488,
+    "sha256": "d98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785",
+    "params_b": 8.2,
+    "active_params_b": 8.2,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-8b-abliterated-q4km",
+    "name": "Qwen3 8B abliterated",
+    "repo": "bartowski/mlabonne_Qwen3-8B-abliterated-GGUF",
+    "file": "mlabonne_Qwen3-8B-abliterated-Q4_K_M.gguf",
+    "size_bytes": 5027784288,
+    "sha256": "361557e69ad101ee22b1baf427283b7ddcf81bc7532b8cee8ac2c6b4d1b81ead",
+    "params_b": 8.2,
+    "active_params_b": 8.2,
+    "layers": 36,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "gemma3-12b-abliterated-q4km",
+    "name": "Gemma 3 12B abliterated",
+    "repo": "bartowski/mlabonne_gemma-3-12b-it-abliterated-GGUF",
+    "file": "mlabonne_gemma-3-12b-it-abliterated-Q4_K_M.gguf",
+    "size_bytes": 7300778656,
+    "sha256": "d1702ca02f33f97c4763cc23041e90b1586c6b8ee33fedc1c62e62045a845d2b",
+    "params_b": 12.19,
+    "active_params_b": 12.19,
+    "layers": 48,
+    "kv_heads": 8,
+    "head_dim": 256,
+    "ctx_max": 131072,
+    "license": "gemma",
+    "tags": [
+      "chat",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "gemma3-12b-heretic-q4km",
+    "name": "Gemma 3 12B heretic",
+    "repo": "mradermacher/gemma-3-12b-it-heretic-GGUF",
+    "file": "gemma-3-12b-it-heretic.Q4_K_M.gguf",
+    "size_bytes": 7300778912,
+    "sha256": "ba10b985c7e6636f5cb1c7916823d16b485c362788d3d1c6d041295ab5506653",
+    "params_b": 12.19,
+    "active_params_b": 12.19,
+    "layers": 48,
+    "kv_heads": 8,
+    "head_dim": 256,
+    "ctx_max": 131072,
+    "license": "gemma",
+    "tags": [
+      "chat",
+      "uncensored",
+      "heretic"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "qwen2.5-coder-14b-q4km",
+    "name": "Qwen2.5 Coder 14B Instruct",
+    "repo": "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+    "file": "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+    "size_bytes": 8988111072,
+    "sha256": "2946d28c9e1bb2bcae6d42e8678863a31775df6f740315c7d7e6d6b6411f5937",
+    "params_b": 14.7,
+    "active_params_b": 14.7,
+    "layers": 48,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "code"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-14b-abliterated-q4km",
+    "name": "Qwen3 14B abliterated",
+    "repo": "bartowski/huihui-ai_Qwen3-14B-abliterated-GGUF",
+    "file": "huihui-ai_Qwen3-14B-abliterated-Q4_K_M.gguf",
+    "size_bytes": 9001749568,
+    "sha256": "d76889059a3bfab30bc565012a0184827ff2bdc10197f6babc24541b98451dbe",
+    "params_b": 14.8,
+    "active_params_b": 14.8,
+    "layers": 40,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-14b-q4km",
+    "name": "Qwen3 14B",
+    "repo": "Qwen/Qwen3-14B-GGUF",
+    "file": "Qwen3-14B-Q4_K_M.gguf",
+    "size_bytes": 9001752960,
+    "sha256": "500a8806e85ee9c83f3ae08420295592451379b4f8cf2d0f41c15dffeb6b81f0",
+    "params_b": 14.8,
+    "active_params_b": 14.8,
+    "layers": 40,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "phi4-heretic-q4km",
+    "name": "Phi-4 14B heretic",
+    "repo": "bartowski/p-e-w_phi-4-heretic-GGUF",
+    "file": "p-e-w_phi-4-heretic-Q4_K_M.gguf",
+    "size_bytes": 9053114848,
+    "sha256": "bd95f02cff5162ddd103de8cc75eb3ad818b81e7b758498accb454ebb2131e13",
+    "params_b": 14.66,
+    "active_params_b": 14.66,
+    "layers": 40,
+    "kv_heads": 10,
+    "head_dim": 128,
+    "ctx_max": 16384,
+    "license": "mit",
+    "tags": [
+      "chat",
+      "uncensored",
+      "heretic"
+    ],
+    "tool_calls": false
+  },
+  {
+    "id": "gpt-oss-20b-abliterated-mxfp4",
+    "name": "gpt-oss 20B abliterated",
+    "repo": "bartowski/huihui-ai_Huihui-gpt-oss-20b-BF16-abliterated-GGUF",
+    "file": "huihui-ai_Huihui-gpt-oss-20b-BF16-abliterated-MXFP4_MOE.gguf",
+    "size_bytes": 12109565600,
+    "sha256": "abca50d1bd95c49d71db36aad0f38090ea5465ce148634c496a48bc87030bdd9",
+    "params_b": 21.0,
+    "active_params_b": 3.6,
+    "layers": 24,
+    "kv_heads": 8,
+    "head_dim": 64,
+    "ctx_max": 131072,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "moe",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "gpt-oss-20b-mxfp4",
+    "name": "gpt-oss 20B",
+    "repo": "ggml-org/gpt-oss-20b-GGUF",
+    "file": "gpt-oss-20b-MXFP4.gguf",
+    "size_bytes": 12109566624,
+    "sha256": "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901",
+    "params_b": 21.0,
+    "active_params_b": 3.6,
+    "layers": 24,
+    "kv_heads": 8,
+    "head_dim": 64,
+    "ctx_max": 131072,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "moe"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "gpt-oss-20b-heretic-mxfp4",
+    "name": "gpt-oss 20B heretic",
+    "repo": "bartowski/p-e-w_gpt-oss-20b-heretic-GGUF",
+    "file": "p-e-w_gpt-oss-20b-heretic-MXFP4_MOE.gguf",
+    "size_bytes": 12109566944,
+    "sha256": "33ebc3cd35d2ef4ac04702934df48007c16a6d24ce9f1a9f07182df131684f89",
+    "params_b": 20.91,
+    "active_params_b": 3.6,
+    "layers": 24,
+    "kv_heads": 8,
+    "head_dim": 64,
+    "ctx_max": 131072,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "moe",
+      "uncensored",
+      "heretic"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-30b-a3b-q4km",
+    "name": "Qwen3 30B A3B",
+    "repo": "Qwen/Qwen3-30B-A3B-GGUF",
+    "file": "Qwen3-30B-A3B-Q4_K_M.gguf",
+    "size_bytes": 18556685824,
+    "sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
+    "params_b": 30.5,
+    "active_params_b": 3.3,
+    "layers": 48,
+    "kv_heads": 4,
+    "head_dim": 128,
+    "ctx_max": 40960,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "reasoning",
+      "moe"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen3-30b-a3b-2507-abliterated-q4km",
+    "name": "Qwen3 30B A3B Instruct 2507 abliterated",
+    "repo": "mradermacher/Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated-GGUF",
+    "file": "Huihui-Qwen3-30B-A3B-Instruct-2507-abliterated.Q4_K_M.gguf",
+    "size_bytes": 18556687008,
+    "sha256": "c83692caa1226fe5747cd6f81ccfc51e6e5fcd390a38c1ae010b6b472a829b40",
+    "params_b": 30.53,
+    "active_params_b": 3.3,
+    "layers": 48,
+    "kv_heads": 4,
+    "head_dim": 128,
+    "ctx_max": 262144,
+    "license": "apache-2.0",
+    "tags": [
+      "chat",
+      "moe",
+      "uncensored",
+      "abliterated"
+    ],
+    "tool_calls": true
+  },
+  {
+    "id": "qwen2.5-coder-32b-q4km",
+    "name": "Qwen2.5 Coder 32B Instruct",
+    "repo": "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+    "file": "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
+    "size_bytes": 19851336672,
+    "sha256": "8e2fd78ff55e7cdf577fda257bac2776feb7d73d922613caf35468073807e815",
+    "params_b": 32.5,
+    "active_params_b": 32.5,
+    "layers": 64,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "ctx_max": 32768,
+    "license": "apache-2.0",
+    "tags": [
+      "code"
+    ],
+    "tool_calls": true
+  }
+]
