@@ -6,6 +6,7 @@ use crate::{
     chat::{self, ChatBackend, Delta, StepOptions},
     config::Config,
     device::Device,
+    image_gen::ImageBackend,
     models,
     type_::{Type, TypeKind},
     util,
@@ -44,6 +45,8 @@ pub enum Ops {
     /// `!`: pops a value into a register.
     Store,
     ReadFile,
+    /// Generate one image and save it below the project root.
+    MakeImage,
     ListDirectory,
     /// Files only, without folders.
     ListFiles,
@@ -91,6 +94,7 @@ impl Ops {
             Ops::Fetch,
             Ops::Store,
             Ops::ReadFile,
+            Ops::MakeImage,
             Ops::ListDirectory,
             Ops::ListFiles,
             Ops::RegView,
@@ -130,6 +134,7 @@ impl Ops {
             Ops::Fetch => "@",
             Ops::Store => "!",
             Ops::ReadFile => "read_file",
+            Ops::MakeImage => "make-image",
             Ops::ListDirectory => "list_directory",
             Ops::ListFiles => "list_files",
             Ops::Each(_) => "each",
@@ -162,6 +167,7 @@ impl Ops {
                 "List a folder relative to the project root; use . for the root. Folders end with / and come first."
             }
             Ops::ListFiles => "List the files (not folders) in a folder relative to the project root, alphabetically.",
+            Ops::MakeImage => "Generate one image with OpenRouter and save it inside the project, using the image model's default dimensions and returned file format.",
             Ops::Each(_) => "Run the [ ] block once per item of a list, with the item on the stack.",
             Ops::RegView => {
                 "Show numbered lines of a register's text. start and end are 1-based and inclusive; at most 200 lines."
@@ -207,6 +213,26 @@ impl Ops {
                 let path = pop(context)?.expect_string()?;
                 let path = context.project.resolve(&path)?;
                 std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))?;
+            }
+            Ops::MakeImage => {
+                let prompt = pop(context)?.expect_string()?;
+                let relative = pop(context)?.expect_string()?;
+                let requested_path = std::path::Path::new(relative.trim());
+                if !matches!(requested_path.components().next_back(), Some(std::path::Component::Normal(_))) {
+                    return Err("image output path must include a filename".into());
+                }
+                let png_relative = requested_path.with_extension("png");
+                let png_relative = png_relative
+                    .to_str()
+                    .ok_or("image output path is not valid UTF-8")?;
+                let path = context.project.resolve(png_relative)?;
+                let config = Config::load(&context.project.folder())?;
+                let image = crate::image_gen::OpenRouterImageBackend::from_environment(&config.image_model)?
+                    .generate(&prompt)?;
+                let saved_path = crate::image_gen::save_image(&path, &image)?;
+                let saved_relative = saved_path.strip_prefix(&context.project.root)
+                    .map_err(|_| "generated image path is outside the project".to_string())?;
+                context.stack.push(Value::String(saved_relative.to_string_lossy().into_owned()));
             }
             Ops::ReadLine => {
                 let answer = util::read_line()?;
@@ -415,6 +441,10 @@ impl Ops {
             Ops::ReadFile | Ops::ListDirectory | Ops::ListFiles => {
                 vec![Type::str("path", "path relative to the project root")]
             }
+            Ops::MakeImage => vec![
+                Type::str("path", "requested output path relative to the project root; extension is adjusted to match the generated format"),
+                Type::str("prompt", "description of the image to generate"),
+            ],
             Ops::Each(_) => vec![Type::new("items", List, "the list to go through")],
             Ops::RegView => vec![
                 Type::new("register", Register, "a register such as R5"),
@@ -471,6 +501,7 @@ impl Ops {
             Ops::Swap => vec![Type::new("b", Any, "a value"), Type::new("a", Any, "a value")],
             Ops::Fetch => vec![Type::new("value", Any, "the register's value")],
             Ops::ReadFile => vec![Type::str("text", "the file's contents")],
+            Ops::MakeImage => vec![Type::str("saved_path", "project-relative path of the generated image")],
             Ops::ListDirectory => vec![Type::new("entries", List, "the folder's entries")],
             Ops::ListFiles => vec![Type::new("files", List, "the folder's files")],
             Ops::RegView | Ops::RegSearch | Ops::Grep => vec![Type::str("lines", "numbered lines")],

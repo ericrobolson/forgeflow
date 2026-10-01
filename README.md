@@ -27,7 +27,7 @@ forgeflow file.ff      # run a ForgeFlow program
 
 ## Chat
 
-Chat is turn by turn. Ordinary messages go directly to the selected model, with no tools available. Prefix a request with `;` (leading spaces are ignored) to translate it into a ForgeFlow program, type-check it, and run it:
+Chat is turn by turn. In the terminal, Left and Right move the input cursor, Option+Left and Option+Right move by word on macOS, and Up and Down browse input history for the current session. Ordinary messages go directly to the selected model, with no tools available. Prefix a request with `;` (leading spaces are ignored) to translate it into a ForgeFlow program, type-check it, and run it:
 
 ```
 ; list files in src
@@ -66,6 +66,6 @@ The `agent` word (available in `.ff` programs) starts llama-server for the selec
 
 Tool results go into scratch registers (R4-R15), and the model receives a short receipt instead of the value, so small local models keep a small context. Text arguments accept `$R5` to pass a register's value. When scratch is full, the least recently used register is replaced and the receipt says so. Each run's transcript is saved in `_forgeflow/sessions/`.
 
-`_forgeflow/config.json` holds the selected `model`, `ctx`, `port`, and `max_steps`. Set `endpoint` (and `endpoint_model`) to use another OpenAI-compatible server, such as Ollama, instead of llama-server.
+`_forgeflow/config.json` holds the selected `model`, `image_model`, `ctx`, `port`, and `max_steps`. `image_model` defaults to `recraft/recraft-v4.1-flash`; `make-image` uses it with OpenRouter and reads the API key from `OPENROUTER_API_KEY`. For example, `"art/lantern.png" "A tiny brass fantasy lantern" make-image` generates one square image and returns its project-relative path. Pixel dimensions in the request are not honored; the model chooses its default resolution (Recraft produces roughly 1024×1024 images). Generated raster images are converted to PNG before saving. An agent run is limited to one image generation. Set `endpoint` (and `endpoint_model`) to use another OpenAI-compatible server, such as Ollama, instead of llama-server.
 
 Environment overrides: `FORGEFLOW_MODELS_DIR` (default `~/local-models`) and `FORGEFLOW_LLAMA_SERVER` (the llama-server binary).

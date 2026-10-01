@@ -15,6 +15,8 @@ pub struct Config {
     pub endpoint: Option<String>,
     /// The model name sent to `endpoint`.
     pub endpoint_model: Option<String>,
+    /// Image generation model ID, such as `recraft/recraft-v4.1-flash`.
+    pub image_model: String,
     pub ctx: u64,
     pub port: u16,
     pub max_steps: usize,
@@ -26,6 +28,7 @@ impl Default for Config {
             model: None,
             endpoint: None,
             endpoint_model: None,
+            image_model: "recraft/recraft-v4.1-flash".into(),
             ctx: 8192,
             port: 8043,
             max_steps: 24,

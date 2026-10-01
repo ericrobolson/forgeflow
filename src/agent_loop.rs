@@ -72,6 +72,7 @@ pub fn run_with(
         json!({"role": "user", "content": task}),
     ];
     let mut failures: HashMap<(String, String), usize> = HashMap::new();
+    let mut image_generation_calls = 0usize;
     let result = (|| {
         for _ in 0..max_steps {
             let request = with_register_table(&messages, &context.registers.table());
@@ -108,7 +109,17 @@ pub fn run_with(
             messages.push(assistant);
 
             for call in &turn.tool_calls {
-                let outcome = tools::execute(context, &call.name, &call.arguments);
+                let outcome = if call.name == "make-image" && image_generation_calls >= 1 {
+                    tools::ToolOutcome {
+                        content: "error: this agent run can generate at most one image".into(),
+                        is_error: true,
+                    }
+                } else {
+                    if call.name == "make-image" {
+                        image_generation_calls += 1;
+                    }
+                    tools::execute(context, &call.name, &call.arguments)
+                };
                 let line = format!("⚙ {} {} {}", call.name, call.arguments, first_line(&outcome.content));
                 writeln!(out, "{}", dim(&line)).ok();
                 messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": outcome.content}));

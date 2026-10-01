@@ -24,6 +24,7 @@ enum ResultMode {
 fn toolset() -> Vec<(Ops, ResultMode)> {
     vec![
         (Ops::ReadFile, ResultMode::Register),
+        (Ops::MakeImage, ResultMode::Inline),
         (Ops::ListDirectory, ResultMode::Register),
         (Ops::RegView, ResultMode::Inline),
         (Ops::RegSearch, ResultMode::Inline),
@@ -367,9 +368,9 @@ mod tests {
         let names: Vec<_> = schemas.iter().map(|s| s["function"]["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
-            ["read_file", "list_directory", "reg_view", "reg_search", "reg_edit", "reg_store", "emit"]
+            ["read_file", "make-image", "list_directory", "reg_view", "reg_search", "reg_edit", "reg_store", "emit"]
         );
-        let reg_view = &schemas[2]["function"]["parameters"];
+        let reg_view = &schemas[3]["function"]["parameters"];
         assert_eq!(reg_view["required"], json!(["register"]));
         assert_eq!(reg_view["properties"]["start"]["type"], "integer");
     }

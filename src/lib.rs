@@ -3,6 +3,7 @@ pub mod agent_loop;
 pub mod chat;
 pub mod config;
 pub mod device;
+pub mod image_gen;
 pub mod messages;
 pub mod models;
 pub mod ops;

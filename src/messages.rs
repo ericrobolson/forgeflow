@@ -48,7 +48,7 @@ pub fn run(mut context: Context) -> Result<(), Box<dyn Error>> {
     // Print the banner before the server starts, so early keystrokes land after it.
     if terminal {
         println!(
-            "ForgeFlow. Enter sends; prefix a program with ; to compile and run it. Shift+Enter adds a line where supported; Ctrl+C exits."
+            "ForgeFlow. Enter sends; Left/Right move the cursor, Option+Left/Right move by word; Up/Down browse history; prefix a program with ; to compile and run it. Shift+Enter adds a line where supported; Ctrl+C exits."
         );
     } else {
         println!("ForgeFlow. Send a message; prefix a program with ; to compile and run it; Ctrl+D to exit.");
@@ -426,6 +426,52 @@ fn begin_continuation(buffer: &mut String, current_line: &mut String) {
     current_line.push_str(CONTINUATION_INDENT);
 }
 
+fn char_byte_index(text: &str, char_index: usize) -> usize {
+    text.char_indices()
+        .nth(char_index)
+        .map_or(text.len(), |(byte_index, _)| byte_index)
+}
+
+fn insert_at_cursor(line: &mut String, cursor: &mut usize, text: &str) {
+    line.insert_str(char_byte_index(line, *cursor), text);
+    *cursor += text.chars().count();
+}
+
+fn move_left_word(line: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position > 0 && chars[position - 1].is_whitespace() {
+        position -= 1;
+    }
+    while position > 0 && !chars[position - 1].is_whitespace() {
+        position -= 1;
+    }
+    position
+}
+
+fn move_right_word(line: &str, cursor: usize) -> usize {
+    let chars: Vec<char> = line.chars().collect();
+    let mut position = cursor.min(chars.len());
+    while position < chars.len() && !chars[position].is_whitespace() {
+        position += 1;
+    }
+    while position < chars.len() && chars[position].is_whitespace() {
+        position += 1;
+    }
+    position
+}
+
+fn redraw_input(stdout: &mut impl Write, buffer_is_empty: bool, line: &str, cursor: usize) -> io::Result<()> {
+    let prompt = prompt(buffer_is_empty);
+    print!("\r\x1b[2K{prompt}{line}");
+    let end = prompt.chars().count() + line.chars().count();
+    let position = prompt.chars().count() + cursor;
+    if end > position {
+        print!("\x1b[{}D", end - position);
+    }
+    stdout.flush()
+}
+
 fn run_stream(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut buffer = String::new();
@@ -495,6 +541,15 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
     let mut stdout = io::stdout();
     let mut buffer = String::new();
     let mut current_line = String::new();
+    let mut cursor = 0usize;
+    let mut input_history: Vec<String> = conversation
+        .history
+        .iter()
+        .map(|exchange| exchange.message.clone())
+        .filter(|message| !message.contains('\n'))
+        .collect();
+    let mut history_position: Option<usize> = None;
+    let mut history_draft = String::new();
     let mut submission = 1;
     print!("> ");
     stdout.flush()?;
@@ -509,6 +564,7 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                 }
                 if is_multiline_enter(key) {
                     begin_continuation(&mut buffer, &mut current_line);
+                    cursor = current_line.chars().count();
                     print!("\r\n{current_line}");
                     stdout.flush()?;
                     continue;
@@ -518,23 +574,100 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                         if current_line.ends_with('\\') {
                             current_line.pop();
                             begin_continuation(&mut buffer, &mut current_line);
+                            cursor = current_line.chars().count();
                             print!("\r\n{current_line}");
                         } else {
                             buffer.push_str(&current_line);
+                            let submitted = buffer.clone();
                             print!("\r\n");
                             report_submission(&mut buffer, submission, true, conversation)?;
+                            if !submitted.trim().is_empty()
+                                && !submitted.contains('\n')
+                                && input_history.last() != Some(&submitted)
+                            {
+                                input_history.push(submitted);
+                            }
+                            history_position = None;
+                            history_draft.clear();
                             submission += 1;
                             current_line.clear();
+                            cursor = 0;
                             print!("> ");
                         }
                     }
+                    KeyCode::Up if buffer.is_empty() && !input_history.is_empty() => {
+                        let position = match history_position {
+                            Some(position) => position.saturating_sub(1),
+                            None => {
+                                history_draft.clone_from(&current_line);
+                                input_history.len() - 1
+                            }
+                        };
+                        history_position = Some(position);
+                        current_line.clone_from(&input_history[position]);
+                        cursor = current_line.chars().count();
+                        redraw_input(&mut stdout, true, &current_line, cursor)?;
+                    }
+                    KeyCode::Down if buffer.is_empty() => {
+                        if let Some(position) = history_position {
+                            if position + 1 < input_history.len() {
+                                history_position = Some(position + 1);
+                                current_line.clone_from(&input_history[position + 1]);
+                            } else {
+                                history_position = None;
+                                current_line.clone_from(&history_draft);
+                            }
+                            cursor = current_line.chars().count();
+                            redraw_input(&mut stdout, true, &current_line, cursor)?;
+                        }
+                    }
                     KeyCode::Backspace => {
-                        current_line.pop();
-                        print!("\r\x1b[2K{}{}", prompt(buffer.is_empty()), current_line);
+                        if cursor > 0 {
+                            let start = char_byte_index(&current_line, cursor - 1);
+                            let end = char_byte_index(&current_line, cursor);
+                            current_line.replace_range(start..end, "");
+                            cursor -= 1;
+                        }
+                        history_position = None;
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                    }
+                    KeyCode::Delete => {
+                        let end = char_byte_index(&current_line, cursor + 1);
+                        let start = char_byte_index(&current_line, cursor);
+                        if end > start {
+                            current_line.replace_range(start..end, "");
+                        }
+                        history_position = None;
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                    }
+                    KeyCode::Left if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
+                        cursor = move_left_word(&current_line, cursor);
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                    }
+                    KeyCode::Left if cursor > 0 => {
+                        cursor -= 1;
+                        print!("\x1b[D");
+                    }
+                    KeyCode::Right if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
+                        cursor = move_right_word(&current_line, cursor);
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                    }
+                    KeyCode::Right if cursor < current_line.chars().count() => {
+                        cursor += 1;
+                        print!("\x1b[C");
+                    }
+                    KeyCode::Home => {
+                        cursor = 0;
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                    }
+                    KeyCode::End => {
+                        cursor = current_line.chars().count();
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        current_line.push(ch);
-                        print!("{ch}");
+                        insert_at_cursor(&mut current_line, &mut cursor, &ch.to_string());
+                        history_position = None;
+                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Esc => {
                         print!("\r\n");
@@ -546,9 +679,9 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                 stdout.flush()?;
             }
             Event::Paste(text) => {
-                current_line.push_str(&text);
-                print!("{text}");
-                stdout.flush()?;
+                insert_at_cursor(&mut current_line, &mut cursor, &text);
+                history_position = None;
+                redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
             }
             _ => {}
         }

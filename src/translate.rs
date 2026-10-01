@@ -22,10 +22,11 @@ const HISTORY_BLOCK: usize = 8;
 /// How much of a turn's output the next turn sees.
 const OUTPUT_EXCERPT_CHARS: usize = 600;
 
-/// The words a message may translate to: read-only and deterministic, except `answer`.
+/// The words a message may translate to. `answer` and `make-image` have external effects.
 pub fn vocabulary() -> Vec<Ops> {
     vec![
         Ops::ReadFile,
+        Ops::MakeImage,
         Ops::ListDirectory,
         Ops::ListFiles,
         Ops::Grep,
@@ -288,6 +289,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
          never pass the words \"previous output\" to read_file. Use the supplied text as the context argument to answer.\n\
          Interpret the current request first; previous output must not change what operation the user asked for. \
          \"print directory\" or \"list the current directory\" means \".\" list_directory print.\n\
+         If the user asks to generate an image and gives an output filename, call `make-image` exactly once. Do not answer with drawing code, instructions, or `print` strings. Its stack order is path, prompt, `make-image`; it requests a square image at the selected model's default resolution, so do not promise requested pixel dimensions.\n\
          To reply to the user, print a string or use answer.\n\
          \n\
          Words ( inputs -- outputs ):\n\
@@ -299,7 +301,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
 
 /// Example turns placed before the conversation; small models imitate real turns far
 /// better than examples described in the system prompt.
-pub const EXAMPLES: [(&str, &str); 16] = [
+pub const EXAMPLES: [(&str, &str); 17] = [
     ("hi!", r#""Hi! What can I do for you?" print"#),
     ("what can you do?", "help"),
     ("what's in the src folder?", r#""src" list_directory print"#),
@@ -327,6 +329,10 @@ pub const EXAMPLES: [(&str, &str); 16] = [
     (
         "[previous output]\n.git/\nREADME.md\n\nprint directory",
         r#""." list_directory print"#,
+    ),
+    (
+        "make an image of a banana and save to .tmp/ban.png",
+        r#"".tmp/ban.png" "A banana" make-image"#,
     ),
 ];
 
@@ -369,7 +375,8 @@ pub fn help_text_with(user_words: &[UserWord]) -> String {
          \x20 - define a persistent word with `; define a function called square that duplicates and multiplies its input`\n\
          \x20 - show registers or local models\n\
          \x20 - repeat steps for each item in a list, such as summarizing each file in a folder\n\
-         I can't write files, run commands, or branch yet.\n\
+         \x20 - generate one image and save it inside this project\n\
+         I can't write arbitrary files, run commands, or branch yet.\n\
          \n\
          For example:\n{examples}\n\
          \n\
@@ -549,6 +556,11 @@ pub fn translate_with(
         let turn = backend.step(&messages, &[], &options, &mut |_| {})?;
         let program = turn.content.trim().to_string();
         match compile_with(&program, &filled, user_words) {
+            Ok(steps) if image_file_request(message) && !valid_image_program(&steps) => {
+                last_error = "this request asks to generate and save an image; use `make-image` exactly once and do not print instructions or answer text".into();
+                messages.push(json!({"role": "assistant", "content": program}));
+                messages.push(json!({"role": "user", "content": format!("That program is invalid: {last_error}. Return only a program shaped like `\"path\" \"image prompt\" make-image`; use the requested output path, and do not add print or answer.")}));
+            }
             Ok(steps) if has_previous_output(history) && reads_previous_output_as_file(&steps) => {
                 last_error = format!(
                     "`{program}`: `previous output` is conversation text, not a file path; use the supplied text as the context for `answer`"
@@ -571,6 +583,38 @@ pub fn translate_with(
         }
     }
     Err(format!("could not translate the message into a valid program ({last_error})"))
+}
+
+fn image_file_request(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    let image_request = ["image", "picture", "illustration", "sprite", "icon"]
+        .iter()
+        .any(|word| message.contains(word));
+    let output_file = [".png", ".webp", ".jpg", ".jpeg"]
+        .iter()
+        .any(|extension| message.contains(extension));
+    let save_action = ["save", "write", "output", "store", "export"]
+        .iter()
+        .any(|verb| message.contains(verb));
+    let generation_action = ["generate", "draw", "render"]
+        .iter()
+        .any(|verb| message.contains(verb))
+        || (["make", "create"].iter().any(|verb| message.contains(verb))
+            && !message.contains("make a list")
+            && !message.contains("create a list"));
+    image_request && output_file && save_action && generation_action
+}
+
+fn valid_image_program(steps: &[Ops]) -> bool {
+    let mut count = 0;
+    for step in steps {
+        match step {
+            Ops::MakeImage => count += 1,
+            Ops::StringLiteral(_) => {}
+            _ => return false,
+        }
+    }
+    count == 1
 }
 
 fn has_previous_output(history: &[Exchange]) -> bool {
