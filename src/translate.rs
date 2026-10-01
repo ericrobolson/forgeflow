@@ -290,6 +290,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
          Interpret the current request first; previous output must not change what operation the user asked for. \
          \"print directory\" or \"list the current directory\" means \".\" list_directory print.\n\
          If the user asks to generate an image and gives an output filename, call `make-image` exactly once. Do not answer with drawing code, instructions, or `print` strings. Its stack order is path, prompt, `make-image`; it requests a square image at the selected model's default resolution, so do not promise requested pixel dimensions.\n\
+         Only when the user is clearly asking for instructions on how to do something, use `answer` to give a concise explanation with a copyable, valid example. Recognize that intent across natural phrasings; do not depend on exact wording. For other requests, translate the requested action directly without adding an unsolicited tutorial. Use the examples below as patterns; don't turn a how-to question into a printout of a word's vocabulary description. Distinguish named cells (`variable name` declared in `_forgeflow/user_words.txt`, then `value name !` and `name @`) from registers (`value R0 !` and `R0 @`). `!` stores the value into the address/register on its right.\n\
          To reply to the user, print a string or use answer.\n\
          \n\
          Words ( inputs -- outputs ):\n\
@@ -301,7 +302,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
 
 /// Example turns placed before the conversation; small models imitate real turns far
 /// better than examples described in the system prompt.
-pub const EXAMPLES: [(&str, &str); 17] = [
+pub const EXAMPLES: [(&str, &str); 19] = [
     ("hi!", r#""Hi! What can I do for you?" print"#),
     ("what can you do?", "help"),
     ("what's in the src folder?", r#""src" list_directory print"#),
@@ -314,6 +315,14 @@ pub const EXAMPLES: [(&str, &str); 17] = [
     ),
     ("remember that we deploy to staging", r#""We deploy to staging." R0 ! "Noted." print"#),
     ("explain what a monad is", r#""" "Explain what a monad is." answer"#),
+    (
+        "how do i store a value in a variable",
+        r#""Named cells: add `variable score` to `_forgeflow/user_words.txt`, then store with `; 10 score !` and fetch with `; score @ print`. Registers need no declaration: use `; \"Sup\" R0 !` to store and `; R0 @ print` to fetch. The value comes before the variable or register, then `!`." "How do I store a value in a variable? Give a runnable example." answer"#,
+    ),
+    (
+        "how do i get a value from a register",
+        r#"Registers use `@` to fetch their value. For example, `; R0 @ print` fetches R0 and prints it; first store with `; \"Sup\" R0 !`. Registers R0-R3 persist across sessions." "How do I get a value from a register? Give a runnable example." answer"#,
+    ),
     ("what is 12 times 7, minus 4?", "12 7 * 4 - print"),
     (
         "list the root folder, then show the models, then my registers",

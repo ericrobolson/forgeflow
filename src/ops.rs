@@ -560,7 +560,7 @@ fn answer(context: &mut Context, text: &str, question: &str) -> Result<(), Strin
         format!("{question}\n\n---\n{text}")
     };
     let messages = [
-        serde_json::json!({"role": "system", "content": "Reply concisely and directly. Base your reply on the provided text when there is one."}),
+        serde_json::json!({"role": "system", "content": "Reply concisely and directly. Base your reply on the provided text when there is one. When asked how to do something, include a concrete, copyable example using valid ForgeFlow syntax, and briefly explain it. Preserve the exact syntax in the provided text; ForgeFlow stores with `value register !` and fetches with `register @`."}),
         serde_json::json!({"role": "user", "content": prompt}),
     ];
     let options = StepOptions {
