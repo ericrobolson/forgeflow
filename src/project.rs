@@ -3,9 +3,10 @@ use std::path::{Component, Path, PathBuf};
 const PROJECT_FOLDER: &'static str = "_forgeflow";
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const REGISTERS_FILE: &str = "registers.json";
+pub const MEMORY_FILE: &str = "memory.json";
 pub const SERVER_LOG_FILE: &str = "llama-server.log";
 /// Per-machine files in `_forgeflow` that stay out of git.
-const IGNORED_FILES: [&str; 3] = [crate::config::CONFIG_FILE, REGISTERS_FILE, SERVER_LOG_FILE];
+const IGNORED_FILES: [&str; 4] = [crate::config::CONFIG_FILE, REGISTERS_FILE, MEMORY_FILE, SERVER_LOG_FILE];
 
 pub struct Project {
     /// The folder containing `_forgeflow`; file words are confined to it.
@@ -129,7 +130,7 @@ mod tests {
         let read = |path: PathBuf| std::fs::read_to_string(path).unwrap();
         assert_eq!(
             read(project.folder().join(".gitignore")),
-            "config.json\nregisters.json\nllama-server.log\n"
+            "config.json\nregisters.json\nmemory.json\nllama-server.log\n"
         );
         assert_eq!(read(project.sessions_folder().join(".gitignore")), "*\n");
 
@@ -138,7 +139,7 @@ mod tests {
         Project::initialize(&root).unwrap();
         assert_eq!(
             read(project.folder().join(".gitignore")),
-            "config.json\nnotes.txt\nregisters.json\nllama-server.log\n"
+            "config.json\nnotes.txt\nregisters.json\nmemory.json\nllama-server.log\n"
         );
         std::fs::remove_dir_all(root).unwrap();
     }

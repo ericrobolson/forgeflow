@@ -66,7 +66,7 @@ pub fn run_with(
             text.to_string()
         }
     };
-    let schemas = tools::schemas();
+    let schemas = tools::schemas_with(&context.user_words);
     let mut messages = vec![
         json!({"role": "system", "content": system_prompt(context)}),
         json!({"role": "user", "content": task}),
@@ -225,10 +225,14 @@ mod tests {
             stack: vec![],
             provider: Provider::Codex,
             registers: Registers::in_memory(),
+            memory: crate::registers::Memory::in_memory(),
             project: Project { root },
             server: None,
             printed: String::new(),
             store_label: "!".into(),
+            user_words: vec![],
+            local_frames: vec![],
+            call_depth: 0,
         }
     }
 

@@ -108,6 +108,13 @@ impl Conversation {
                 println!("Conversation cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
                 Ok(())
             }
+            ["/reload"] => match crate::user_words::reload(&mut self.context) {
+                Ok(count) => {
+                    println!("Reloaded {count} user-defined word(s).");
+                    Ok(())
+                }
+                Err(error) => Err(format!("reload failed; keeping current words: {error}")),
+            },
             ["/model"] => {
                 let current = Config::load(&self.context.project.folder())
                     .ok()
@@ -124,7 +131,7 @@ impl Conversation {
             ["/models"] => workflow::run_steps(&mut self.context, &[Ops::Models]),
             ["/pull", id] => models::pull(id, &mut io::stderr()).map(|_| ()),
             _ => Err(format!(
-                "unknown command `{message}`; try /clear, /model, /model <id>, /models, /pull <id>, or /help"
+                "unknown command `{message}`; try /clear, /reload, /model, /model <id>, /models, /pull <id>, or /help"
             )),
         };
         if let Err(error) = result {
@@ -223,15 +230,20 @@ impl Conversation {
 
     /// Translates a semicolon-prefixed request to a checked ForgeFlow program and runs it.
     fn run_program_request(&mut self, request: &str) {
+        if is_definition_request(request) {
+            return self.initialize_word(request);
+        }
         let started = Instant::now();
-        let (program, steps, attempts) = match compile_direct_program(request) {
-            Some(steps) => (request.trim().to_string(), steps, 0),
-            None => {
-                let translated = match translate::translate(
+        let (program, steps, attempts) = match compile_direct_program(request, &self.context.user_words) {
+            Ok(Some(steps)) => (request.trim().to_string(), steps, 0),
+            Err(error) => return eprintln!("error: {error}"),
+            Ok(None) => {
+                let translated = match translate::translate_with(
                     &self.backend,
                     &self.history,
                     request.trim(),
                     &self.context.registers,
+                    &self.context.user_words,
                 ) {
                     Ok(translated) => translated,
                     Err(error) => return eprintln!("error: {error}"),
@@ -260,15 +272,83 @@ impl Conversation {
             output: self.context.take_printed(),
         });
     }
+
+    /// Turns a natural-language definition request into one checked, persistent user word.
+    fn initialize_word(&mut self, request: &str) {
+        let mut messages = vec![json!({
+            "role": "system",
+            "content": "You are the ForgeFlow word definition initializer. Convert the user's request into exactly one ForgeFlow definition, with no explanation, markdown, or surrounding text. Exact syntax: : name ( inputName Type -- outputName Type ) body ;. Example: : square ( n Int -- result Int ) dup * ;. Inputs are already on the initial data stack, so use stack operations such as dup; do not put words like 'input' in the code. Named inputs may be copied with $inputName. The body must leave exactly the declared outputs. Supported types: String, Int, Bool, List, Register, Address, Any. If the user does not specify an input type and the operation is type-generic (for example dup/drop/swap/print), declare the input as Any rather than guessing String or Int. ForgeFlow is a postfix stack language; use only its normal operators and currently available words. Never invent syntax from another language."
+        })];
+        messages.push(json!({"role":"user", "content":request.trim()}));
+        let mut last_error = String::new();
+        for attempt in 0..3 {
+            let mut generated = String::new();
+            let response = self.backend.step(
+                &messages,
+                &[],
+                &StepOptions { temperature: Some(0.0), max_tokens: Some(256), no_thinking: true, ..StepOptions::default() },
+                &mut |delta| if let Delta::Text(text) = delta { generated.push_str(&text); },
+            );
+            if let Err(error) = response { return eprintln!("error: could not initialize word: {error}"); }
+            let definition = unwrap_definition(&generated);
+            match crate::user_words::compile_one(&self.context.user_words, "<generated definition>", definition) {
+                Ok(_) => match crate::user_words::add_definition(&self.context.project, definition) {
+                    Ok(words) => {
+                        let name = definition.split_whitespace().nth(1).unwrap_or("word").to_string();
+                        self.context.user_words = words;
+                        println!("Defined `{name}`. Call it in a program, for example `; 3 {name}`.");
+                        println!("{}", self.dim(&format!("→ {}", definition.trim())));
+                        self.history.push(Exchange { message: format!(";{}", request.trim()), program: definition.trim().to_string(), output: format!("Defined `{name}`.") });
+                        return;
+                    }
+                    Err(error) => last_error = error,
+                },
+                Err(error) => last_error = error,
+            }
+            if attempt < 2 {
+                messages.push(json!({"role":"assistant", "content":generated}));
+                messages.push(json!({"role":"user", "content":format!("That definition failed validation: {last_error}. Return one corrected complete ForgeFlow definition only. Follow the exact syntax and square example from the system instructions.")}));
+            }
+        }
+        eprintln!("error: could not initialize word after 3 attempts: {last_error}");
+    }
+}
+
+fn is_definition_request(request: &str) -> bool {
+    let request = request.trim_start().to_ascii_lowercase();
+    ["define ", "define\n", "define\t", "i want you to define ", "please define ", "can you define ", "could you define ", "help me define "]
+        .iter().any(|prefix| request.starts_with(prefix))
+}
+
+fn unwrap_definition(generated: &str) -> &str {
+    let text = generated.trim();
+    if let Some(rest) = text.strip_prefix("```") {
+        let rest = rest.strip_prefix("forth").or_else(|| rest.strip_prefix("ff")).unwrap_or(rest);
+        return rest.trim().strip_suffix("```").unwrap_or(rest.trim()).trim();
+    }
+    text
 }
 
 /// Uses valid source after `;` as code directly; natural language falls through to translation.
-fn compile_direct_program(source_text: &str) -> Option<Vec<Ops>> {
+fn compile_direct_program(source_text: &str, user_words: &[crate::user_words::UserWord]) -> Result<Option<Vec<Ops>>, String> {
     let source = Source::new("<code>", source_text);
-    let parsed = parser::parse(&source).ok()?;
-    let steps = words::compile(&parsed.tokens).ok()?;
-    workflow::check_steps(vec![], &steps).ok()?;
-    Some(steps)
+    let Ok(parsed) = parser::parse(&source) else { return Ok(None); };
+    let mentions_user_word = parsed.tokens.iter().any(|token| match &token.kind {
+        parser::TokenKind::Identifier(name) => user_words.iter().any(|word| word.name == *name),
+        _ => false,
+    });
+    let descriptors: std::collections::HashMap<String, Ops> = user_words.iter().map(|w| (w.name.clone(), Ops::UserCall {
+        name: w.name.clone(), inputs: w.inputs.iter().map(|p| p.kind).collect(), outputs: w.outputs.iter().map(|p| p.kind).collect(),
+    })).collect();
+    let steps = match words::compile_with(&parsed.tokens, &descriptors, &std::collections::HashMap::new()) {
+        Ok(steps) => steps,
+        Err(errors) if mentions_user_word => return Err(errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join("; ")),
+        Err(_) => return Ok(None),
+    };
+    if let Err(error) = workflow::check_steps(vec![], &steps) {
+        return if mentions_user_word { Err(error) } else { Ok(None) };
+    }
+    Ok(Some(steps))
 }
 
 fn timing(translated: Duration, ran: Duration, attempts: usize) -> String {
@@ -292,6 +372,41 @@ fn accept_line(buffer: &mut String, line: &str) -> bool {
 
 fn prompt(buffer_is_empty: bool) -> &'static str {
     if buffer_is_empty { "> " } else { "" }
+}
+
+#[cfg(test)]
+mod definition_request_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_natural_definition_requests_case_insensitively() {
+        assert!(is_definition_request("define a function called square"));
+        assert!(is_definition_request("  DEFINE\tword foo"));
+        assert!(is_definition_request("i want you to define a function called square"));
+        assert!(is_definition_request("Please define square as dup multiply"));
+        assert!(!is_definition_request("definition of square"));
+        assert!(!is_definition_request("square 3"));
+        assert!(!is_definition_request(""));
+    }
+
+    #[test]
+    fn removes_only_a_single_surrounding_fence() {
+        assert_eq!(unwrap_definition(": square ( n Int -- result Int ) dup * ;"), ": square ( n Int -- result Int ) dup * ;");
+        assert_eq!(unwrap_definition("```forth\n: square ( n Int -- result Int ) dup * ;\n```"), ": square ( n Int -- result Int ) dup * ;");
+        assert_eq!(unwrap_definition("```ff\n: square ( n Int -- result Int ) dup * ;\n```"), ": square ( n Int -- result Int ) dup * ;");
+    }
+
+    #[test]
+    fn direct_user_word_calls_keep_type_and_stack_errors() {
+        let words = crate::user_words::compile_one(
+            &[],
+            "test.ff",
+            ": printTwice ( value Any -- ) dup print print ;",
+        ).unwrap();
+        assert!(compile_direct_program("3 printTwice", &words).unwrap().is_some());
+        assert!(compile_direct_program("square", &words).unwrap().is_none());
+        assert!(compile_direct_program("printTwice", &words).is_err());
+    }
 }
 
 fn is_multiline_enter(key: KeyEvent) -> bool {

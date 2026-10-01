@@ -46,6 +46,20 @@ The chat assistant receives conversational history and no function tools. Semico
 
 The code vocabulary includes file and directory reads, register memory, arithmetic, and `[ ... ] each` loops. Programs can also use `agent` to start the tool-calling loop. Ordinary chat messages never run these words implicitly.
 
+### Project-defined words
+
+Put word definitions in any `.ff` file under `_forgeflow/`; nested folders are searched too. Files are loaded shallowest first and then by path, and definitions can call words from any discovered file. The generated `_forgeflow/user_words.txt` file is also loaded as ForgeFlow source and can be edited as plain text in Zed. A definition has a checked stack signature:
+
+In the interactive prompt, initialize a word from a natural-language request with `; define ...`. ForgeFlow asks the model for one typed definition, validates it, saves it to `_forgeflow/user_words.txt`, and activates it immediately. For example, `; define a function called square which duplicates and multiplies its input` creates a persistent `square` word; call it with `; 3 square`. Invalid generated definitions are rejected without changing the saved file.
+
+```forth
+: double ( n Int -- result Int ) $n $n + swap drop ;
+```
+
+The signature lists named inputs and outputs from bottom to top. `$n` pushes a copy of the named input; use normal stack words to consume or reorder values. Supported types are `String`, `Int`, `Bool`, `List`, `Register`, `Address`, and `Any`. Definitions may call one another. Recursive calls must be in tail position; final-word calls are trampolined. Words are available to `.ff` programs, translated `;` requests, and as agent tools. Use `/reload` in chat to validate and activate edits; an invalid reload keeps the working set.
+
+Declare a durable named cell with `variable score`. It pushes an `Address` that can be saved in registers or passed to user-defined words. `@` fetches the cell and `!` stores into it, for example `10 score ! score @ print`. Named cell values are stored in `_forgeflow/memory.json`; register persistence remains separate.
+
 ## Agent loop
 
 The `agent` word (available in `.ff` programs) starts llama-server for the selected model (reusing one already serving it) and runs the loop in ForgeFlow itself. The model's tools are ForgeFlow words, with schemas generated from each word's typed inputs: `read_file`, `list_directory`, `reg_view`, `reg_search`, `reg_edit`, `reg_store`, and `emit`. File words are confined to the project root.

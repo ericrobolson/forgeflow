@@ -10,6 +10,7 @@ pub enum Value {
     Bool(bool),
     List(Vec<Value>),
     Register(usize),
+    Address(String),
 }
 impl Value {
     pub fn expect_string(&self) -> Result<String, String> {
@@ -40,6 +41,7 @@ impl Value {
             Value::Bool(_) => TypeKind::Bool,
             Value::List(_) => TypeKind::List,
             Value::Register(_) => TypeKind::Register,
+            Value::Address(_) => TypeKind::Address,
         }
     }
 
@@ -55,6 +57,7 @@ impl Value {
                 .collect::<Vec<_>>()
                 .join("\n"),
             Value::Register(r) => format!("R{r}"),
+            Value::Address(name) => format!("&{name}"),
         }
     }
 
@@ -73,6 +76,7 @@ impl Value {
             Value::Bool(_) => "bool".into(),
             Value::List(items) => format!("list({})", items.len()),
             Value::Register(r) => format!("register R{r}"),
+            Value::Address(name) => format!("address &{name}"),
         }
     }
 }

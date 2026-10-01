@@ -27,9 +27,13 @@ fn parse_and_report(source: &Source, show_tokens: bool) -> Result<ParseOutput, (
 }
 
 fn run_file(path: &Path, mut context: Context) -> Result<(), Box<dyn Error>> {
+    context.user_words = forgeflow::user_words::load(&context.project)?;
     let source = read_source(path)?;
     let parsed = parse_and_report(&source, false).map_err(|_| "source parse failed")?;
-    let steps = words::compile(&parsed.tokens).map_err(|errors| {
+    let descriptors: std::collections::HashMap<String, Ops> = context.user_words.iter().map(|w| (w.name.clone(), Ops::UserCall {
+        name: w.name.clone(), inputs: w.inputs.iter().map(|p| p.kind).collect(), outputs: w.outputs.iter().map(|p| p.kind).collect(),
+    })).collect();
+    let steps = words::compile_with(&parsed.tokens, &descriptors, &std::collections::HashMap::new()).map_err(|errors| {
         parser::print_errors(&source, &errors);
         "source compile failed"
     })?;
@@ -52,12 +56,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     let project = Project::initialize(&working_dir)?;
-    let context = Context::new(project, Provider::Claude)?;
+    let mut context = Context::new(project, Provider::Claude)?;
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
-        [] => forgeflow::messages::run(context),
+        [] => {
+            context.user_words = forgeflow::user_words::load(&context.project)?;
+            forgeflow::messages::run(context)
+        }
         ["models"] => run_words(context, vec![Ops::Models]),
         ["pull", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::Pull]),
         ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
@@ -110,5 +117,18 @@ mod tests {
         assert_eq!(source.name, path.display().to_string());
         assert_eq!(parser::parse(&source).unwrap().tokens.len(), 2);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn file_mode_loads_and_executes_project_words() {
+        let root = std::env::temp_dir().join(format!("forgeflow-word-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let project = Project::initialize(&root).unwrap();
+        fs::write(project.folder().join("words.ff"), ": double ( n Int -- result Int ) $n $n + swap drop ;").unwrap();
+        let program = root.join("main.ff");
+        fs::write(&program, "21 double print").unwrap();
+        let context = Context::new(project, Provider::Codex).unwrap();
+        run_file(&program, context).unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 }

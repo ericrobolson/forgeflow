@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,44 @@ pub const DURABLE_COUNT: usize = 4;
 /// Durable registers hold notes, not whole files.
 pub const DURABLE_MAX_CHARS: usize = 2000;
 const PREVIEW_CHARS: usize = 120;
+pub const MEMORY_FILE: &str = "memory.json";
+
+/// Named persistent cells addressed by user words such as `score`.
+#[derive(Debug)]
+pub struct Memory { cells: HashMap<String, Option<Value>>, path: Option<PathBuf> }
+impl Memory {
+    pub fn in_memory() -> Self { Self { cells: HashMap::new(), path: None } }
+    pub fn open(path: PathBuf) -> Result<Self, String> {
+        let cells = if path.exists() { serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?).map_err(|e| format!("invalid durable memory: {e}"))? } else { HashMap::new() };
+        Ok(Self { cells, path: Some(path) })
+    }
+    pub fn address(&mut self, name: &str) -> Value { self.cells.entry(name.to_string()).or_insert(None); Value::Address(name.to_string()) }
+    pub fn get(&self, name: &str) -> Result<&Value, String> { self.cells.get(name).and_then(Option::as_ref).ok_or_else(|| format!("address `{name}` is uninitialized")) }
+    pub fn set(&mut self, name: &str, value: Value) -> Result<(), String> {
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '?') {
+            return Err(format!("invalid durable address name `{name}`"));
+        }
+        let old = self.cells.insert(name.to_string(), Some(value));
+        if let Err(error) = self.persist() { if let Some(old) = old { self.cells.insert(name.to_string(), old); } else { self.cells.remove(name); } return Err(error); }
+        Ok(())
+    }
+    fn persist(&self) -> Result<(), String> {
+        let Some(path) = &self.path else { return Ok(()); };
+        if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| e.to_string())?; }
+        let bytes = serde_json::to_vec_pretty(&self.cells).map_err(|e| e.to_string())?;
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let temporary = parent.join(format!(".memory-{}.tmp", uuid::Uuid::now_v7()));
+        let result = (|| {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|e| e.to_string())?;
+            file.write_all(&bytes).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+            std::fs::rename(&temporary, path).map_err(|e| e.to_string())
+        })();
+        if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+        result
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slot {
@@ -251,6 +290,19 @@ fn preview(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_memory_persists_values_and_addresses_by_name() {
+        let path = std::env::temp_dir().join(format!("forgeflow-memory-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut memory = Memory::open(path.clone()).unwrap();
+        assert_eq!(memory.address("score"), Value::Address("score".into()));
+        memory.set("score", Value::Int(42)).unwrap();
+        drop(memory);
+        let reopened = Memory::open(path.clone()).unwrap();
+        assert_eq!(reopened.get("score"), Ok(&Value::Int(42)));
+        std::fs::remove_file(path).unwrap();
+    }
 
     fn text(s: &str) -> Value {
         Value::String(s.to_string())

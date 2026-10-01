@@ -1,8 +1,8 @@
 use crate::{
     agent::{self},
     ops::*,
-    project::{Project, REGISTERS_FILE},
-    registers::Registers,
+    project::{Project, REGISTERS_FILE, MEMORY_FILE},
+    registers::{Memory, Registers},
     server::LocalServer,
     type_::TypeKind,
     value::Value,
@@ -111,6 +111,7 @@ pub struct Context {
     pub stack: Vec<Value>,
     pub provider: agent::Provider,
     pub registers: Registers,
+    pub memory: Memory,
     pub project: Project,
     /// The llama-server started for the agent, kept for the session and stopped on drop.
     pub server: Option<LocalServer>,
@@ -118,19 +119,27 @@ pub struct Context {
     pub printed: String,
     /// What `!` records as a register's source, such as the program that stored it.
     pub store_label: String,
+    pub user_words: Vec<crate::user_words::UserWord>,
+    pub local_frames: Vec<std::collections::HashMap<String, Value>>,
+    pub call_depth: usize,
 }
 
 impl Context {
     pub fn new(project: Project, provider: agent::Provider) -> Result<Self, String> {
         let registers = Registers::open(project.folder().join(REGISTERS_FILE))?;
+        let memory = Memory::open(project.folder().join(MEMORY_FILE))?;
         Ok(Self {
             stack: vec![],
             provider,
             registers,
+            memory,
             project,
             server: None,
             printed: String::new(),
             store_label: "!".into(),
+            user_words: vec![],
+            local_frames: vec![],
+            call_depth: 0,
         })
     }
 

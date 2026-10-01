@@ -1,15 +1,17 @@
-use crate::{
-    ops::Ops,
-    parser::{ParseError, Token, TokenKind},
-    registers::parse_register,
-};
+use std::collections::HashMap;
+
+use crate::{ops::Ops, parser::{ParseError, Token, TokenKind}, registers::parse_register, type_::TypeKind};
 
 /// Turns parsed tokens into executable words, reporting unknown words with their spans.
 /// `[ ... ] each` compiles to one `Each` step holding the block's words.
 pub fn compile(tokens: &[Token]) -> Result<Vec<Ops>, Vec<ParseError>> {
+    compile_with(tokens, &HashMap::new(), &HashMap::new())
+}
+
+pub fn compile_with(tokens: &[Token], user_words: &HashMap<String, Ops>, locals: &HashMap<String, TypeKind>) -> Result<Vec<Ops>, Vec<ParseError>> {
     let mut errors = vec![];
     let mut position = 0;
-    let steps = compile_block(tokens, &mut position, None, &mut errors);
+    let steps = compile_block(tokens, &mut position, None, &mut errors, user_words, locals);
     if errors.is_empty() { Ok(steps) } else { Err(errors) }
 }
 
@@ -19,6 +21,8 @@ fn compile_block(
     position: &mut usize,
     open: Option<&Token>,
     errors: &mut Vec<ParseError>,
+    user_words: &HashMap<String, Ops>,
+    locals: &HashMap<String, TypeKind>,
 ) -> Vec<Ops> {
     let words = Ops::named_words();
     let mut steps = vec![];
@@ -36,7 +40,7 @@ fn compile_block(
                 "true" => Ops::BoolLiteral(true),
                 "false" => Ops::BoolLiteral(false),
                 "[" => {
-                    let body = compile_block(tokens, position, Some(token), errors);
+                    let body = compile_block(tokens, position, Some(token), errors, user_words, locals);
                     match tokens.get(*position).map(|t| &t.kind) {
                         Some(TokenKind::Identifier(next)) if next == "each" => {
                             *position += 1;
@@ -57,9 +61,16 @@ fn compile_block(
                     error(errors, token, "`each` needs a [ ] block right before it".into());
                     continue;
                 }
+                _ if name.starts_with('$') => match locals.get(&name[1..]) {
+                    Some(kind) => Ops::LocalGet(name[1..].to_string(), *kind),
+                    None => {
+                        error(errors, token, format!("unknown named input `{name}`"));
+                        continue;
+                    }
+                },
                 _ => match parse_register(name).filter(|_| !name.starts_with('$')) {
                     Some(register) => Ops::Register(register),
-                    None => match words.iter().find(|w| w.name() == name) {
+                    None => match user_words.get(name).or_else(|| words.iter().find(|w| w.name() == name)) {
                         Some(word) => word.clone(),
                         None => {
                             error(errors, token, format!("unknown word `{name}`"));
@@ -139,7 +150,7 @@ mod tests {
             vec![
                 (4..14, "unknown word `frobnicate`"),
                 (15..18, "floats are not supported yet"),
-                (19..22, "unknown word `$R4`"),
+                (19..22, "unknown named input `$R4`"),
             ]
         );
     }

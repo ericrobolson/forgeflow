@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::{Value as Json, json};
 
 use crate::{
@@ -7,6 +9,7 @@ use crate::{
     registers::{REGISTER_COUNT, Registers},
     server::TRANSLATE_SLOT,
     type_::{Type, TypeKind},
+    user_words::UserWord,
     words,
     workflow,
 };
@@ -43,6 +46,14 @@ pub fn vocabulary() -> Vec<Ops> {
     ]
 }
 
+pub fn vocabulary_with(user_words: &[UserWord]) -> Vec<Ops> {
+    let mut vocabulary = vocabulary();
+    vocabulary.extend(user_words.iter().map(|word| Ops::UserCall {
+        name: word.name.clone(), inputs: word.inputs.iter().map(|p| p.kind).collect(), outputs: word.outputs.iter().map(|p| p.kind).collect(),
+    }));
+    vocabulary
+}
+
 /// Deepest stack a translated program may build; real requests stay well within it.
 const MAX_STACK_DEPTH: usize = 3;
 
@@ -53,6 +64,7 @@ enum Slot {
     Text,
     Int,
     List,
+    Address,
     Any,
 }
 
@@ -62,7 +74,8 @@ impl Slot {
             TypeKind::String => Slot::Text,
             TypeKind::Int => Slot::Int,
             TypeKind::List => Slot::List,
-            TypeKind::Bool | TypeKind::Register | TypeKind::Any => Slot::Any,
+            TypeKind::Address => Slot::Address,
+            TypeKind::Bool | TypeKind::Register | TypeKind::Reference | TypeKind::Any => Slot::Any,
         }
     }
 
@@ -71,6 +84,7 @@ impl Slot {
             Slot::Text => TypeKind::String,
             Slot::Int => TypeKind::Int,
             Slot::List => TypeKind::List,
+            Slot::Address => TypeKind::Address,
             Slot::Any => TypeKind::Any,
         }
     }
@@ -80,6 +94,7 @@ impl Slot {
             Slot::Text => 's',
             Slot::Int => 'i',
             Slot::List => 'l',
+            Slot::Address => 'd',
             Slot::Any => 'a',
         }
     }
@@ -116,7 +131,7 @@ fn state(prefix: char, stack: &[Slot]) -> String {
 }
 
 /// The next stacks reachable from `stack`, each with the text that gets there.
-fn transitions(stack: &[Slot], in_block: bool) -> Vec<(String, Vec<Slot>)> {
+fn transitions(stack: &[Slot], in_block: bool, vocabulary: &[Ops]) -> Vec<(String, Vec<Slot>)> {
     let mut next = vec![];
     let push = |slot: Slot| {
         let mut grown = stack.to_vec();
@@ -138,10 +153,16 @@ fn transitions(stack: &[Slot], in_block: bool) -> Vec<(String, Vec<Slot>)> {
         if !in_block && matches!(top, Slot::List | Slot::Any) {
             next.push((r#"block " each""#.to_string(), rest.to_vec()));
         }
+        if *top == Slot::Address {
+            let mut fetched = rest.to_vec();
+            fetched.push(Slot::Any);
+            next.push((format!("{:?}", "@"), fetched));
+            if let Some((_, below)) = rest.split_last() { next.push((format!("{:?}", "!"), below.to_vec())); }
+        }
     }
-    for op in vocabulary().iter().filter(|op| !matches!(op, Ops::Fetch | Ops::Store)) {
+    for op in vocabulary.iter().filter(|op| !matches!(op, Ops::Fetch | Ops::Store)) {
         if let Some(after) = apply(op, stack) {
-            next.push((format!("{:?}", op.name()), after));
+            next.push((format!("{:?}", op.token_name()), after));
         }
     }
     next
@@ -151,9 +172,14 @@ fn transitions(stack: &[Slot], in_block: bool) -> Vec<(String, Vec<Slot>)> {
 /// shape (`x` before an item, `t` after one), so a word is only offered when the stack
 /// holds its inputs: the model cannot write `list_directory` before a path.
 pub fn grammar() -> String {
+    grammar_with(&[])
+}
+
+pub fn grammar_with(user_words: &[UserWord]) -> String {
+    let vocabulary = vocabulary_with(user_words);
     let mut rules = vec![];
-    add_states(&mut rules, vec![], false);
-    add_states(&mut rules, vec![Slot::Any], true);
+    add_states(&mut rules, vec![], false, &vocabulary);
+    add_states(&mut rules, vec![Slot::Any], true, &vocabulary);
     format!(
         r#"root ::= x
 block ::= "[ " ya
@@ -170,7 +196,7 @@ register ::= "R" ("1" [0-5] | [0-9])
 /// Adds a rule pair for every stack reachable from `start`. At top level, `x` precedes an
 /// item and `t` follows one, ending anywhere. In a block, `y` and `u` play those roles, and
 /// `]` may only follow once the item is used up, so blocks always leave the stack as found.
-fn add_states(rules: &mut Vec<String>, start: Vec<Slot>, in_block: bool) {
+fn add_states(rules: &mut Vec<String>, start: Vec<Slot>, in_block: bool, vocabulary: &[Ops]) {
     let (before, after) = if in_block { ('y', 'u') } else { ('x', 't') };
     let mut seen = std::collections::BTreeSet::new();
     let mut pending = vec![start];
@@ -178,7 +204,7 @@ fn add_states(rules: &mut Vec<String>, start: Vec<Slot>, in_block: bool) {
         if !seen.insert(stack.clone()) {
             continue;
         }
-        let alternatives: Vec<String> = transitions(&stack, in_block)
+        let alternatives: Vec<String> = transitions(&stack, in_block, vocabulary)
             .into_iter()
             .map(|(text, next)| {
                 let rule = format!("{text} {}", state(after, &next));
@@ -213,15 +239,16 @@ fn walk(steps: &[Ops], mut stack: Vec<Slot>, in_block: bool) -> Option<Vec<Slot>
                 Some(Ops::Store) => r#"register " !""#.to_string(),
                 _ => return None,
             },
+            Ops::AddressOf(name) => format!("{:?}", name),
             Ops::Each(body) => {
                 if !walk(body, vec![Slot::Any], true)?.is_empty() {
                     return None;
                 }
                 r#"block " each""#.to_string()
             }
-            word => format!("{:?}", word.name()),
+            word => format!("{:?}", word.token_name()),
         };
-        stack = transitions(&stack, in_block).into_iter().find(|(t, _)| *t == text)?.1;
+        stack = transitions(&stack, in_block, &vocabulary()).into_iter().find(|(t, _)| *t == text)?.1;
     }
     Some(stack)
 }
@@ -231,12 +258,20 @@ fn signature(types: &[Type]) -> String {
 }
 
 pub fn system_prompt() -> String {
-    let words = vocabulary()
+    system_prompt_with(&[])
+}
+
+pub fn system_prompt_with(user_words: &[UserWord]) -> String {
+    let words = vocabulary_with(user_words)
         .iter()
         .map(|op| {
+            if let Ops::UserCall { name, .. } = op {
+                let word = user_words.iter().find(|w| w.name == *name).expect("descriptor is from loaded words");
+                return format!("{} ( {} -- {} ) project-defined word", word.name, named_signature(&word.inputs), named_signature(&word.outputs));
+            }
             format!(
                 "{} ( {} -- {} ) {}",
-                op.name(),
+                op.token_name(),
                 signature(&op.inputs()),
                 signature(&op.outputs()),
                 op.description()
@@ -247,8 +282,8 @@ pub fn system_prompt() -> String {
     format!(
         "Translate each user message into one ForgeFlow program and output only the program.\n\
          A program is words run left to right on a stack: \"text\" pushes a string, 12 pushes an integer, \
-         R0-R15 push a register. Words pop their inputs (rightmost on top) and push their outputs.\n\
-         Paths are relative to the project root. R0-R3 persist across sessions; R4-R15 are scratch.\n\
+         R0-R15 push a register; project variables push durable addresses. Words pop their inputs (rightmost on top) and push their outputs.\n\
+         Paths are relative to the project root. R0-R3 persist across sessions; R4-R15 are scratch. Use @ and ! with a variable address for durable named memory.\n\
          When the user refers to an earlier turn, its result is supplied in [previous output]. Treat that as text, not a path: \
          never pass the words \"previous output\" to read_file. Use the supplied text as the context argument to answer.\n\
          Interpret the current request first; previous output must not change what operation the user asked for. \
@@ -297,12 +332,20 @@ pub const EXAMPLES: [(&str, &str); 16] = [
 
 /// What a message can ask for, generated from the vocabulary.
 pub fn help_text() -> String {
-    let words = vocabulary()
+    help_text_with(&[])
+}
+
+pub fn help_text_with(user_words: &[UserWord]) -> String {
+    let words = vocabulary_with(user_words)
         .iter()
         .map(|op| {
+            if let Ops::UserCall { name, .. } = op {
+                let word = user_words.iter().find(|w| w.name == *name).expect("descriptor is from loaded words");
+                return format!("  {:<14} ( {} -- {} ) project-defined word", word.name, named_signature(&word.inputs), named_signature(&word.outputs));
+            }
             format!(
                 "  {:<14} ( {} -- {} ) {}",
-                op.name(),
+                op.token_name(),
                 signature(&op.inputs()),
                 signature(&op.outputs()),
                 op.description()
@@ -322,6 +365,8 @@ pub fn help_text() -> String {
          \x20 - list folders and read files in this project, or find lines that mention something\n\
          \x20 - do integer arithmetic, and several of these in one message\n\
          \x20 - keep values in registers: R0-R3 are remembered across sessions, R4-R15 last until you quit\n\
+         \x20 - use named durable cells through their addresses and the Forth words @ and !\n\
+         \x20 - define a persistent word with `; define a function called square that duplicates and multiplies its input`\n\
          \x20 - show registers or local models\n\
          \x20 - repeat steps for each item in a list, such as summarizing each file in a folder\n\
          I can't write files, run commands, or branch yet.\n\
@@ -335,9 +380,15 @@ pub fn help_text() -> String {
          \x20 /model          show the current model and installed ones\n\
          \x20 /model <id>     switch models\n\
          \x20 /models         list models with fit and speed estimates\n\
+         \x20 /reload         reload project-defined words\n\
+         \x20 /clear          clear conversational history\n\
          \x20 /pull <id>      download a model",
         "[ ... ] each"
     )
+}
+
+fn named_signature(params: &[crate::user_words::Parameter]) -> String {
+    params.iter().map(|p| format!("{} {:?}", p.name, p.kind)).collect::<Vec<_>>().join(" ")
 }
 
 /// Messages answered with `help` directly, skipping the model.
@@ -356,8 +407,12 @@ pub struct Exchange {
 /// Chat messages for the translator. Past turns render identically every time, so the
 /// server's prompt cache covers everything before the newest message.
 pub fn messages(history: &[Exchange], message: &str, registers: &str) -> Vec<Json> {
+    messages_with(history, message, registers, &[])
+}
+
+pub fn messages_with(history: &[Exchange], message: &str, registers: &str, user_words: &[UserWord]) -> Vec<Json> {
     let recent = &history[history_start(history.len())..];
-    let mut messages = vec![json!({"role": "system", "content": system_prompt()})];
+    let mut messages = vec![json!({"role": "system", "content": system_prompt_with(user_words)})];
     for (user, program) in EXAMPLES {
         messages.push(json!({"role": "user", "content": user}));
         messages.push(json!({"role": "assistant", "content": program}));
@@ -397,10 +452,15 @@ fn user_content(previous_output: Option<&str>, message: &str) -> String {
 /// Parses, compiles, and type-checks a program, rejecting words outside the vocabulary
 /// and fetches from registers that will be empty when the fetch runs.
 pub fn compile(program: &str, filled: &dyn Fn(usize) -> bool) -> Result<Vec<Ops>, String> {
+    compile_with(program, filled, &[])
+}
+
+pub fn compile_with(program: &str, filled: &dyn Fn(usize) -> bool, user_words: &[UserWord]) -> Result<Vec<Ops>, String> {
     let source = Source::new("<message>", program);
     let parsed = parser::parse(&source).map_err(|errors| describe(&errors))?;
-    let steps = words::compile(&parsed.tokens).map_err(|errors| describe(&errors))?;
-    if let Some(step) = unavailable(&steps, &vocabulary()) {
+    let descriptors: HashMap<String, Ops> = user_words.iter().map(|w| (w.name.clone(), Ops::UserCall { name: w.name.clone(), inputs: w.inputs.iter().map(|p| p.kind).collect(), outputs: w.outputs.iter().map(|p| p.kind).collect() })).collect();
+    let steps = words::compile_with(&parsed.tokens, &descriptors, &HashMap::new()).map_err(|errors| describe(&errors))?;
+    if let Some(step) = unavailable(&steps, &vocabulary_with(user_words)) {
         return Err(format!("`{}` is not available here", step.name()));
     }
     workflow::check_steps(vec![], &steps)?;
@@ -465,20 +525,30 @@ pub fn translate(
     message: &str,
     registers: &Registers,
 ) -> Result<Translation, String> {
+    translate_with(backend, history, message, registers, &[])
+}
+
+pub fn translate_with(
+    backend: &dyn ChatBackend,
+    history: &[Exchange],
+    message: &str,
+    registers: &Registers,
+    user_words: &[UserWord],
+) -> Result<Translation, String> {
     let filled = |r: usize| registers.is_filled(r);
     let options = StepOptions {
-        grammar: Some(grammar()),
+        grammar: Some(grammar_with(user_words)),
         temperature: Some(0.0),
         max_tokens: Some(MAX_PROGRAM_TOKENS),
         no_thinking: true,
         slot: Some(TRANSLATE_SLOT),
     };
-    let mut messages = messages(history, message, &registers.summary());
+    let mut messages = messages_with(history, message, &registers.summary(), user_words);
     let mut last_error = String::new();
     for attempt in 1..=2 {
         let turn = backend.step(&messages, &[], &options, &mut |_| {})?;
         let program = turn.content.trim().to_string();
-        match compile(&program, &filled) {
+        match compile_with(&program, &filled, user_words) {
             Ok(steps) if has_previous_output(history) && reads_previous_output_as_file(&steps) => {
                 last_error = format!(
                     "`{program}`: `previous output` is conversation text, not a file path; use the supplied text as the context for `answer`"
@@ -576,6 +646,31 @@ mod tests {
             let listed = grammar.contains(&format!("{:?}", op.name()));
             assert_eq!(listed, !matches!(op, Ops::Fetch | Ops::Store), "{}", op.name());
         }
+    }
+
+    #[test]
+    fn custom_words_appear_in_translation_vocabulary_grammar_and_compile() {
+        let word = UserWord {
+            name: "increment".into(),
+            inputs: vec![crate::user_words::Parameter { name: "n".into(), kind: TypeKind::Int }],
+            outputs: vec![crate::user_words::Parameter { name: "result".into(), kind: TypeKind::Int }],
+            body: vec![], source: "words.ff".into(),
+        };
+        assert!(grammar_with(std::slice::from_ref(&word)).contains(r#""increment""#));
+        assert!(system_prompt_with(std::slice::from_ref(&word)).contains("increment ( n Int -- result Int )"));
+        let steps = compile_with("5 increment", &|_| false, std::slice::from_ref(&word)).unwrap();
+        assert!(matches!(steps[1], Ops::UserCall { ref name, .. } if name == "increment"));
+    }
+
+    #[test]
+    fn address_words_can_be_fetched_or_stored_in_generated_grammar() {
+        let address = UserWord { name: "score".into(), inputs: vec![], outputs: vec![crate::user_words::Parameter { name: "address".into(), kind: TypeKind::Address }], body: vec![], source: "memory.ff".into() };
+        let grammar = grammar_with(std::slice::from_ref(&address));
+        assert!(grammar.contains(r#""score""#));
+        assert!(grammar.contains(r#""@""#));
+        assert!(grammar.contains(r#""!""#));
+        assert!(compile_with("score @ print", &|_| false, std::slice::from_ref(&address)).is_ok());
+        assert!(compile_with("42 score !", &|_| false, std::slice::from_ref(&address)).is_ok());
     }
 
     #[test]

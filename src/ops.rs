@@ -49,6 +49,9 @@ pub enum Ops {
     ListFiles,
     /// `[ ... ] each`: runs the block once per list item, with the item on the stack.
     Each(Vec<Ops>),
+    LocalGet(String, TypeKind),
+    AddressOf(String),
+    UserCall { name: String, inputs: Vec<TypeKind>, outputs: Vec<TypeKind> },
     RegView,
     RegSearch,
     /// Lines of text containing a pattern.
@@ -72,6 +75,9 @@ pub enum Ops {
 }
 
 impl Ops {
+    pub fn token_name(&self) -> String {
+        match self { Ops::UserCall { name, .. } => name.clone(), _ => self.name().to_string() }
+    }
     /// Every word callable by name, for the compiler's lookup table.
     pub fn named_words() -> Vec<Ops> {
         vec![
@@ -127,6 +133,9 @@ impl Ops {
             Ops::ListDirectory => "list_directory",
             Ops::ListFiles => "list_files",
             Ops::Each(_) => "each",
+            Ops::LocalGet(_, _) => "local input",
+            Ops::AddressOf(_) => "address",
+            Ops::UserCall { .. } => "user word",
             Ops::RegView => "reg_view",
             Ops::RegSearch => "reg_search",
             Ops::Grep => "grep",
@@ -218,6 +227,13 @@ impl Ops {
             Ops::BoolLiteral(b) => context.stack.push(Value::Bool(*b)),
             Ops::Register(r) => context.stack.push(Value::Register(*r)),
             Ops::SpecifyAgent(provider) => todo!(),
+            Ops::LocalGet(name, _) => {
+                let value = context.local_frames.iter().rev().find_map(|frame| frame.get(name)).cloned()
+                    .ok_or_else(|| format!("no active input named `${name}`"))?;
+                context.stack.push(value);
+            }
+            Ops::AddressOf(name) => context.stack.push(context.memory.address(name)),
+            Ops::UserCall { name, .. } => crate::user_words::execute(context, name)?,
             Ops::Add | Ops::Subtract | Ops::Multiply | Ops::Divide => {
                 let b = pop(context)?.expect_int()?;
                 let a = pop(context)?.expect_int()?;
@@ -237,15 +253,23 @@ impl Ops {
                 context.stack.push(below);
             }
             Ops::Fetch => {
-                let register = pop(context)?.expect_register()?;
-                let value = context.registers.get(register)?.clone();
+                let value = pop(context)?;
+                let value = match value {
+                    Value::Register(register) => context.registers.get(register)?.clone(),
+                    Value::Address(name) => context.memory.get(&name)?.clone(),
+                    other => return Err(format!("@ needs a register or address, got {}", other.describe())),
+                };
                 context.stack.push(value);
             }
             Ops::Store => {
-                let register = pop(context)?.expect_register()?;
+                let target = pop(context)?;
                 let value = pop(context)?;
                 let label = context.store_label.clone();
-                context.registers.set(register, value, &label)?;
+                match target {
+                    Value::Register(register) => context.registers.set(register, value, &label)?,
+                    Value::Address(name) => context.memory.set(&name, value)?,
+                    other => return Err(format!("! needs a register or address, got {}", other.describe())),
+                }
             }
             Ops::ReadFile => {
                 let relative = pop(context)?.expect_string()?;
@@ -382,10 +406,11 @@ impl Ops {
             Ops::Print => vec![Type::new("value", Any, "the value to print")],
             Ops::Dup | Ops::Drop => vec![Type::new("value", Any, "a value")],
             Ops::Swap => vec![Type::new("a", Any, "a value"), Type::new("b", Any, "a value")],
-            Ops::Fetch | Ops::Emit => vec![Type::new("register", Register, "a register such as R5")],
+            Ops::Fetch => vec![Type::new("address", Reference, "a register or address")],
+            Ops::Emit => vec![Type::new("register", Register, "a register such as R5")],
             Ops::Store => vec![
                 Type::new("value", Any, "the value, or $R5 to copy a register"),
-                Type::new("register", Register, "the register to store into, such as R0"),
+                Type::new("register", Reference, "the register or address to store into"),
             ],
             Ops::ReadFile | Ops::ListDirectory | Ops::ListFiles => {
                 vec![Type::str("path", "path relative to the project root")]
@@ -425,6 +450,9 @@ impl Ops {
             | Ops::ShowRegisters
             | Ops::Help
             | Ops::Models => vec![],
+            Ops::LocalGet(_, _) => vec![],
+            Ops::AddressOf(_) => vec![],
+            Ops::UserCall { inputs, .. } => inputs.iter().map(|kind| Type::new("input", *kind, "user word input")).collect(),
         }
     }
 
@@ -464,6 +492,9 @@ impl Ops {
             | Ops::Models
             | Ops::Pull
             | Ops::UseModel => vec![],
+            Ops::LocalGet(_, kind) => vec![Type::new("local", *kind, "named input")],
+            Ops::AddressOf(_) => vec![Type::new("address", Address, "durable memory address")],
+            Ops::UserCall { outputs, .. } => outputs.iter().map(|kind| Type::new("output", *kind, "user word output")).collect(),
         }
     }
 }

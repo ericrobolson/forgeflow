@@ -1,0 +1,2 @@
+: square ( n Int -- ) dup * print ;
+: printTwice ( s String --  ) dup print print ;

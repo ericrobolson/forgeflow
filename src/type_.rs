@@ -30,12 +30,15 @@ pub enum TypeKind {
     Bool,
     List,
     Register,
+    Address,
+    /// Internal input accepted by `@` and `!`: either a register or durable address.
+    Reference,
     /// Only known at runtime, such as a value fetched from a register.
     Any,
 }
 impl TypeKind {
     /// Whether a value of type `got` can be used where `self` is expected.
     pub fn accepts(self, got: TypeKind) -> bool {
-        self == TypeKind::Any || got == TypeKind::Any || self == got
+        self == TypeKind::Any || got == TypeKind::Any || self == got || (self == TypeKind::Reference && matches!(got, TypeKind::Register | TypeKind::Address))
     }
 }

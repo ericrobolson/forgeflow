@@ -29,7 +29,7 @@
 
 ## User-defined words
 
-- [ ] Add Forth-style word definitions that compose built-in and user-defined operations. Give each word a checked stack effect, support calls between definitions, and reject duplicate or unknown words clearly. This should ideally be done at load time. Add a 'reload' command to reload the source code for hot reloading.
+- [x] Add Forth-style word definitions in recursively discovered `_forgeflow/**/*.ff` files and `_forgeflow/user_words.txt`, with checked named stack effects, cross-file calls, tail-call recursion, durable named address cells, agent tools, and `/reload`.
 
 ## Typed entity data for small games
 
