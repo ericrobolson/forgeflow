@@ -14,6 +14,10 @@ pub fn confirmation(prompt: &str) -> bool {
     io::stdout().flush().unwrap();
 
     while let Ok(input) = read_line() {
+        // End of input: nothing more will arrive, so treat it as no.
+        if input.is_empty() {
+            return false;
+        }
         let input = input.trim();
         if input == "y" {
             return true;

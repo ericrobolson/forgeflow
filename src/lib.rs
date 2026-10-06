@@ -11,6 +11,7 @@ pub mod parser;
 pub mod project;
 pub mod registers;
 pub mod server;
+pub mod setup;
 pub mod tools;
 pub mod translate;
 pub mod type_;

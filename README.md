@@ -25,6 +25,8 @@ forgeflow use <id>     # select the model
 forgeflow file.ff      # run a ForgeFlow program
 ```
 
+The first time you run `forgeflow` with no model or `endpoint` configured, it walks you through choosing one: it lists models already in `~/local-models` and the recommended downloads for this machine, then downloads and selects the one you pick.
+
 ## Chat
 
 Chat is turn by turn. In the terminal, Left and Right move the input cursor, Option+Left and Option+Right move by word on macOS, and Up and Down browse input history for the current session. Ordinary messages go directly to the selected model, with no tools available. Prefix a request with `;` (leading spaces are ignored) to translate it into a ForgeFlow program, type-check it, and run it:

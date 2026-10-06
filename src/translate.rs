@@ -321,7 +321,7 @@ pub const EXAMPLES: [(&str, &str); 19] = [
     ),
     (
         "how do i get a value from a register",
-        r#"Registers use `@` to fetch their value. For example, `; R0 @ print` fetches R0 and prints it; first store with `; \"Sup\" R0 !`. Registers R0-R3 persist across sessions." "How do I get a value from a register? Give a runnable example." answer"#,
+        r#""Registers use `@` to fetch their value. For example, `; R0 @ print` fetches R0 and prints it; first store with `; \"Sup\" R0 !`. Registers R0-R3 persist across sessions." "How do I get a value from a register? Give a runnable example." answer"#,
     ),
     ("what is 12 times 7, minus 4?", "12 7 * 4 - print"),
     (

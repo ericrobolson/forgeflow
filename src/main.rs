@@ -1,11 +1,16 @@
-use std::{error::Error, fs, io, path::Path};
+use std::{
+    error::Error,
+    fs,
+    io::{self, IsTerminal},
+    path::Path,
+};
 
 use forgeflow::{
     agent::Provider,
     ops::Ops,
     parser::{self, ParseOutput, Source},
     project::Project,
-    util, words,
+    setup, util, words,
     workflow::{self, Context},
 };
 
@@ -62,6 +67,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         [] => {
+            let config = forgeflow::config::Config::load(&context.project.folder())?;
+            // Without a terminal there is no one to ask; chat reports what is missing.
+            if setup::needs_setup(&config) && io::stdin().is_terminal() && !setup::run(&mut context)? {
+                println!("No model selected. Run `forgeflow` again or `forgeflow models` when you're ready.");
+                return Ok(());
+            }
             context.user_words = forgeflow::user_words::load(&context.project)?;
             forgeflow::messages::run(context)
         }
