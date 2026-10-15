@@ -1,2 +1,4 @@
 : cubed ( n Int -- result Int )
   dup dup * * ;
+: squared ( n Int -- result Int ) dup * ;
+: llm_summary ( path String --  ) read_file "Summarize this file in pseudocode." answer ;

@@ -1,23 +1,22 @@
-- [ ] Add ability to execute prompt real time, outputting stuff when you can or when user stops typing.
-
+- [x] Local models: device probe, catalog with fit/speed estimates, resumable verified download, managed llama-server
 - [x] Build out a definition for a Forth like, strongly and statically typed, concatenative language for interacting with agents
-- [x] Build out a runtime to process it
-- [x] Add a project concept + initialization.
-- [x] Add ability to parse + validate + load text files
-- [ ] In main menu, add ability to run workflows
-- [ ] Add loading of source files or scaffolding of them + durable workflow state for things like agentic pipelines
-- [ ] Add swap/swizzle/etc (dup, drop, swap done)
 - [x] Add memory (16 registers: R0-R3 durable, R4-R15 scratch)
-- [ ] Add function definitions
-- [ ] Add a visualizer/editor so as you move your cursor over a word it'll show the stack and any errors visually
 - [x] Build out a parser to parse programs
 - [x] Host-run agent loop: words exposed as tools, results in registers
 - [x] Chat: each message translates to one grammar-constrained program, run deterministically
 - [x] Loops: `[ ... ] each` over lists
+- [x] Build out a runtime to process it
+- [x] Add a project concept + initialization.
+- [x] Add ability to parse + validate + load text files
+- [ ] In main menu, add ability to run workflows
+- [ ] Add ability to execute prompt real time, outputting stuff when you can or when user stops typing.
+- [ ] Add loading of source files or scaffolding of them + durable workflow state for things like agentic pipelines
+- [ ] Add swap/swizzle/etc (dup, drop, swap done)
+- [ ] Add function definitions
+- [ ] Add a visualizer/editor so as you move your cursor over a word it'll show the stack and any errors visually
 - [ ] Conditionals
 - [ ] Run `each` items concurrently on spare server slots
 - [ ] Smaller translator model option, separate from the answer model
-- [x] Local models: device probe, catalog with fit/speed estimates, resumable verified download, managed llama-server
 - [ ] Anthropic Messages backend
 - [ ] CLI backends (claude/codex/opencode) behind the loop, with tool calls as text
 - [ ] Text tool-call format for models without native tool calling
@@ -30,7 +29,3 @@
 ## User-defined words
 
 - [x] Add Forth-style word definitions in recursively discovered `_forgeflow/**/*.ff` files and `_forgeflow/user_words.ff.txt`, with checked named stack effects, cross-file calls, tail-call recursion, durable named address cells, agent tools, and `/reload`.
-
-## Typed entity data for small games
-
-- [ ] Add game entities with typed fields for integers, booleans, strings, and collections. Provide operations to create entities, read and update fields, and persist the world so a small ForgeFlow game can define its rules as user-defined words.

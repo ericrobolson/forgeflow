@@ -47,6 +47,22 @@ The chat assistant receives conversational history and no function tools. Semico
 
 The code vocabulary includes file and directory reads, register memory (name a register as `R0` to `R15`, then use `@` to fetch and `!` to store), arithmetic, and `[ ... ] each` loops. Programs can also use `agent` to start the tool-calling loop. Ordinary chat messages never run these words implicitly.
 
+### The stack
+
+The stack persists between `;` lines, as in a Forth prompt, and whatever is left on it is shown after each program as a blue `stack:` line, bottom to top:
+
+```
+> ; 9 9 9
+stack: 9 9 9
+> ; dup
+stack: 9 9 9 9
+> ; + print
+18
+stack: 9 9 9
+```
+
+Programs are type-checked against the current stack, and the translator is told what is on it, so you can say "add them". A program that fails leaves the stack as it was. Long or multi-line values are shortened to one line in the display. `/clear` empties the stack along with the conversation.
+
 ### Suggest mode
 
 Start a message with `?` to ask which commands to use for a goal. Nothing is run. The model is shown the current vocabulary, including project-defined words, and replies with one to three candidate commands; each is compiled and type-checked first, with one retry on errors, and invalid ones are dropped. The first valid command is placed on the next input line, so press Enter to run it or edit it first:
@@ -57,13 +73,13 @@ Start a message with `?` to ask which commands to use for a goal. Nothing is run
 > ; "art/image.png" "an image" make-image█
 ```
 
-If a word you need doesn't exist, the suggestion may include a `; define a function called NAME that ...` line, which defines the word when you run it (see below). If no word can do the job, the model says so, for example when searching for text across files, since there is no project-wide search word yet. The prefill works in the interactive terminal only. A bare `?` is an ordinary chat message.
+If a word you need doesn't exist, or you ask how to define one, the suggestion is a definition line such as `; : double ( n Int -- result Int ) dup + ;`. It is checked before it is shown, and running it with Enter saves it to the word file (see below). If no word can do the job, the model says so, for example when searching for text across files, since there is no project-wide search word yet. The prefill works in the interactive terminal only. A bare `?` is an ordinary chat message.
 
 ### Project-defined words
 
 Put word definitions in any `.ff` file under `_forgeflow/`; nested folders are searched too. Files are loaded shallowest first and then by path, and definitions can call words from any discovered file. The generated `_forgeflow/user_words.ff.txt` file is also loaded as ForgeFlow source and can be edited as plain text in Zed. (A file named `user_words.txt` from earlier versions is renamed to this automatically.)
 
-In the interactive prompt, initialize a word from a natural-language request with `; define ...`; `? define ...` puts that command on the input line without running it. ForgeFlow asks the model for one typed definition, validates it, saves it to `_forgeflow/user_words.ff.txt`, and activates it immediately. For example, `; define a function called square which duplicates and multiplies its input` creates a persistent `square` word; call it with `; 3 square`. Invalid generated definitions are rejected without changing the saved file.
+In the interactive prompt there are two ways to add a word. Type a definition after the semicolon, e.g. `; : double ( n Int -- result Int ) dup + ;`; it is checked and saved to `_forgeflow/user_words.ff.txt` without calling the model, and `? how would i define ...` puts one on the input line for you. Or describe it in English with `; define ...`: ForgeFlow asks the model for one typed definition, validates it, saves it, and activates it immediately. For example, `; define a function called square which duplicates and multiplies its input` creates a persistent `square` word; call it with `; 3 square`. Invalid definitions are rejected without changing the saved file.
 
 A definition has a checked stack signature:
 

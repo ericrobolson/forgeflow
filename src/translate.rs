@@ -262,8 +262,9 @@ pub fn system_prompt() -> String {
     system_prompt_with(&[])
 }
 
-pub fn system_prompt_with(user_words: &[UserWord]) -> String {
-    let words = vocabulary_with(user_words)
+/// The vocabulary as `word ( inputs -- outputs ) description` lines, for prompts.
+pub fn word_listing_with(user_words: &[UserWord]) -> String {
+    vocabulary_with(user_words)
         .iter()
         .map(|op| {
             if let Ops::UserCall { name, .. } = op {
@@ -279,12 +280,17 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
             )
         })
         .collect::<Vec<_>>()
-        .join("\n");
+        .join("\n")
+}
+
+pub fn system_prompt_with(user_words: &[UserWord]) -> String {
+    let words = word_listing_with(user_words);
     format!(
         "Translate each user message into one ForgeFlow program and output only the program.\n\
          A program is words run left to right on a stack: \"text\" pushes a string, 12 pushes an integer, \
          R0-R15 push a register; project variables push durable addresses. Words pop their inputs (rightmost on top) and push their outputs.\n\
          Paths are relative to the project root. R0-R3 persist across sessions; R4-R15 are scratch. Use @ and ! with a variable address for durable named memory.\n\
+         If a [stack] block is supplied, those values (bottom to top) are already on the stack when the program starts; use them instead of retyping them.\n\
          When the user refers to an earlier turn, its result is supplied in [previous output]. Treat that as text, not a path: \
          never pass the words \"previous output\" to read_file. Use the supplied text as the context argument to answer.\n\
          Interpret the current request first; previous output must not change what operation the user asked for. \
@@ -308,9 +314,10 @@ pub fn suggest_prompt_with(user_words: &[UserWord]) -> String {
          SUGGEST MODE overrides the instruction above to output only a program. The user describes a goal and wants the commands to run. \
          Reply with one to three candidate programs, one per line, each prefixed with `; ` (for example `; \"src\" list_directory print`), \
          and nothing else: no backticks, no explanations. Use only the words listed above. \
-         When a reusable word that does not exist yet would help, suggest a definition command on its own line, before the commands that call it: \
-         `; define a function called NAME that DESCRIPTION` in plain English (for example `; define a function called cubed that duplicates twice and multiplies twice`). \
-         Nothing is saved until the user runs it.\n\
+         If the user asks how to define a word, or a reusable word that does not exist yet would help, give the definition as a command line of the form \
+         `; : name ( inputName Type -- outputName Type ) body ;` with types String, Int, Bool, List, Register, Address or Any. Inputs are already on the stack \
+         (for example `; : cubed ( n Int -- result Int ) dup dup * * ;`), the body may call only the words listed above, and it must leave exactly the declared outputs. \
+         Declare outputs only for values the body really leaves on the stack: `print` and `answer` consume their inputs and leave nothing, so a word ending in either has no outputs (`( path String -- )`). A word that takes its input from the stack must not also write a literal path or URL: `read_file` reads the path already on the stack. Put a definition before any commands that call it. A definition is saved only when the user runs it.\n\
          If no listed word can do the job, reply with a single plain sentence saying so instead of inventing words. \
          Nothing is executed.",
         system_prompt_with(user_words)
@@ -327,6 +334,10 @@ pub fn suggest_messages_with(goal: &str, user_words: &[UserWord]) -> Vec<Json> {
         messages.push(json!({"role": "user", "content": user}));
         messages.push(json!({"role": "assistant", "content": format!("; {program}")}));
     }
+    messages.push(json!({"role": "user", "content": "how would i make a word that doubles a number"}));
+    messages.push(json!({"role": "assistant", "content": "; : double ( n Int -- result Int ) dup + ;\n; 4 double print"}));
+    messages.push(json!({"role": "user", "content": "make a word that takes a file path and summarizes the file"}));
+    messages.push(json!({"role": "assistant", "content": "; : summarize ( path String -- ) read_file \"Summarize this file.\" answer ;\n; \"README.md\" summarize"}));
     messages.push(json!({"role": "user", "content": goal}));
     messages
 }
@@ -460,6 +471,11 @@ pub fn messages(history: &[Exchange], message: &str, registers: &str) -> Vec<Jso
 }
 
 pub fn messages_with(history: &[Exchange], message: &str, registers: &str, user_words: &[UserWord]) -> Vec<Json> {
+    messages_on_stack(history, message, registers, "", user_words)
+}
+
+/// Like `messages_with`, also telling the model what is already on the stack (`stack` is empty for none).
+pub fn messages_on_stack(history: &[Exchange], message: &str, registers: &str, stack: &str, user_words: &[UserWord]) -> Vec<Json> {
     let recent = &history[history_start(history.len())..];
     let mut messages = vec![json!({"role": "system", "content": system_prompt_with(user_words)})];
     for (user, program) in EXAMPLES {
@@ -473,6 +489,9 @@ pub fn messages_with(history: &[Exchange], message: &str, registers: &str, user_
         previous_output = Some(&exchange.output);
     }
     let mut latest = user_content(previous_output, message);
+    if !stack.is_empty() {
+        latest = format!("[stack]\n{stack}\n\n{latest}");
+    }
     if !registers.is_empty() {
         latest = format!("[registers]\n{registers}\n\n{latest}");
     }
@@ -505,6 +524,11 @@ pub fn compile(program: &str, filled: &dyn Fn(usize) -> bool) -> Result<Vec<Ops>
 }
 
 pub fn compile_with(program: &str, filled: &dyn Fn(usize) -> bool, user_words: &[UserWord]) -> Result<Vec<Ops>, String> {
+    compile_on_stack(program, filled, user_words, &[])
+}
+
+/// Like `compile_with`, for a program that starts with values (given by type, bottom to top) already on the stack.
+pub fn compile_on_stack(program: &str, filled: &dyn Fn(usize) -> bool, user_words: &[UserWord], stack: &[TypeKind]) -> Result<Vec<Ops>, String> {
     let source = Source::new("<message>", program);
     let parsed = parser::parse(&source).map_err(|errors| describe(&errors))?;
     let descriptors: HashMap<String, Ops> = user_words.iter().map(|w| (w.name.clone(), Ops::UserCall { name: w.name.clone(), inputs: w.inputs.iter().map(|p| p.kind).collect(), outputs: w.outputs.iter().map(|p| p.kind).collect() })).collect();
@@ -512,7 +536,7 @@ pub fn compile_with(program: &str, filled: &dyn Fn(usize) -> bool, user_words: &
     if let Some(step) = unavailable(&steps, &vocabulary_with(user_words)) {
         return Err(format!("`{}` is not available here", step.name()));
     }
-    workflow::check_steps(vec![], &steps)?;
+    workflow::check_steps(stack.to_vec(), &steps)?;
     let mut stored = [false; REGISTER_COUNT];
     for pair in steps.windows(2) {
         match pair {
@@ -584,6 +608,20 @@ pub fn translate_with(
     registers: &Registers,
     user_words: &[UserWord],
 ) -> Result<Translation, String> {
+    translate_on_stack(backend, history, message, registers, user_words, &[])
+}
+
+/// Like `translate_with`, for a program that starts with `stack` (bottom to top) in place.
+pub fn translate_on_stack(
+    backend: &dyn ChatBackend,
+    history: &[Exchange],
+    message: &str,
+    registers: &Registers,
+    user_words: &[UserWord],
+    stack: &[crate::value::Value],
+) -> Result<Translation, String> {
+    let kinds: Vec<TypeKind> = stack.iter().map(|value| value.kind()).collect();
+    let stack_text = stack_summary(stack);
     let filled = |r: usize| registers.is_filled(r);
     let options = StepOptions {
         grammar: Some(grammar_with(user_words)),
@@ -592,12 +630,12 @@ pub fn translate_with(
         no_thinking: true,
         slot: Some(TRANSLATE_SLOT),
     };
-    let mut messages = messages_with(history, message, &registers.summary(), user_words);
+    let mut messages = messages_on_stack(history, message, &registers.summary(), &stack_text, user_words);
     let mut last_error = String::new();
     for attempt in 1..=2 {
         let turn = backend.step(&messages, &[], &options, &mut |_| {})?;
         let program = turn.content.trim().to_string();
-        match compile_with(&program, &filled, user_words) {
+        match compile_on_stack(&program, &filled, user_words, &kinds) {
             Ok(steps) if image_file_request(message) && !valid_image_program(&steps) => {
                 last_error = "this request asks to generate and save an image; use `make-image` exactly once and do not print instructions or answer text".into();
                 messages.push(json!({"role": "assistant", "content": program}));
@@ -625,6 +663,24 @@ pub fn translate_with(
         }
     }
     Err(format!("could not translate the message into a valid program ({last_error})"))
+}
+
+/// The stack as text for display and prompts, bottom to top, each value kept to one short line.
+pub fn stack_summary(stack: &[crate::value::Value]) -> String {
+    stack
+        .iter()
+        .map(|value| {
+            let text = value.to_text().replace('\n', "⏎");
+            let cut: String = text.chars().take(60).collect();
+            let more = if text.chars().count() > 60 { "…" } else { "" };
+            match value {
+                crate::value::Value::String(_) => format!("\"{cut}{more}\""),
+                crate::value::Value::List(items) => format!("[{} items: {cut}{more}]", items.len()),
+                _ => format!("{cut}{more}"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn image_file_request(message: &str) -> bool {

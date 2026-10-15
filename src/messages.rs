@@ -93,7 +93,28 @@ fn report_submission(
     Ok(())
 }
 
+/// Output colours by kind of turn: chat, `;` program results, `?` suggestions, `/` commands.
+const CHAT_COLOR: &str = "\x1b[36m";
+const RUN_COLOR: &str = "\x1b[32m";
+const SUGGEST_COLOR: &str = "\x1b[33m";
+const STACK_COLOR: &str = "\x1b[34m";
+const COMMAND_COLOR: &str = "\x1b[35m";
+
 impl Conversation {
+    /// Starts coloured output on a terminal; pair with `end_color`.
+    fn begin_color(&self, color: &str) {
+        if self.styled {
+            print!("{color}");
+        }
+    }
+
+    fn end_color(&self) {
+        if self.styled {
+            print!("\x1b[0m");
+            io::stdout().flush().ok();
+        }
+    }
+
     fn dim(&self, text: &str) -> String {
         if self.styled {
             format!("\x1b[2m{text}\x1b[0m")
@@ -108,7 +129,8 @@ impl Conversation {
         let result = match words.as_slice() {
             ["/clear"] => {
                 self.history.clear();
-                println!("Conversation cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
+                self.context.stack.clear();
+                println!("Conversation and stack cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
                 Ok(())
             }
             ["/reload"] => match crate::user_words::reload(&mut self.context) {
@@ -171,17 +193,15 @@ impl Conversation {
     /// Translates one message, runs the program, and records the turn.
     fn turn(&mut self, message: &str) {
         if message.starts_with('/') && message != "/help" {
-            return self.command(message);
+            self.begin_color(COMMAND_COLOR);
+            self.command(message);
+            self.end_color();
+            return;
         }
         if let Some(request) = message.trim_start().strip_prefix(';') {
             return self.run_program_request(request);
         }
         if let Some(goal) = message.trim_start().strip_prefix('?').map(str::trim).filter(|goal| !goal.is_empty()) {
-            if is_definition_request(goal) {
-                println!("; {goal}");
-                self.prefill = Some(format!("; {goal}"));
-                return;
-            }
             return self.suggest(goal);
         }
         self.chat(message);
@@ -192,7 +212,7 @@ impl Conversation {
         let mut messages = translate::suggest_messages_with(goal, &self.context.user_words);
         let mut valid: Vec<String> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
-        for attempt in 0..2 {
+        for attempt in 0..3 {
             let mut generated = String::new();
             let result = self.backend.step(
                 &messages,
@@ -213,8 +233,11 @@ impl Conversation {
                     notes.push(line.to_string());
                     continue;
                 };
-                if is_definition_request(program) {
-                    valid.push(format!("; {program}"));
+                if program.starts_with(':') {
+                    match crate::user_words::compile_one(&self.context.user_words, "<suggested definition>", program) {
+                        Ok(_) => valid.push(format!("; {program}")),
+                        Err(error) => errors.push(format!("`; {program}`: {error}")),
+                    }
                     continue;
                 }
                 let filled = |r: usize| self.context.registers.is_filled(r);
@@ -223,22 +246,29 @@ impl Conversation {
                     Err(error) => errors.push(format!("`; {program}`: {error}")),
                 }
             }
-            if !valid.is_empty() || !notes.is_empty() || errors.is_empty() || attempt == 1 {
+            if !valid.is_empty() || !notes.is_empty() || errors.is_empty() || attempt == 2 {
                 for error in errors {
                     println!("{}", self.dim(&format!("rejected: {error}")));
                 }
                 break;
             }
             messages.push(json!({"role": "assistant", "content": generated}));
+            let definition_hint = if errors.iter().any(|e| e.contains("`; :")) {
+                " Every parameter in a definition needs a type after its name, written `( path String -- result String )` (types: String, Int, Bool, List, Register, Address, Any); the part after `--` lists outputs the same way and is empty for none. Inputs are already on the stack, so the body does not name them. `print` and `answer` leave nothing on the stack, so a body ending in either declares no outputs. Do not put quoted text such as \"previous output\" or \"path\" in the body unless you mean a literal string."
+            } else {
+                ""
+            };
             messages.push(json!({"role": "user", "content": format!(
-                "Those failed to compile: {}. Only the listed words exist, and each word takes its inputs from the stack in the order shown (for example `\"out.png\" \"prompt\" make-image`). Reply with corrected `; ` commands only.",
+                "Those failed to compile: {}. Only the listed words exist, and each word takes its inputs from the stack in the order shown (for example `\"out.png\" \"prompt\" make-image`).{definition_hint} Reply with corrected `; ` commands only.",
                 errors.join("; ")
             )}));
         }
         valid.dedup();
+        self.begin_color(SUGGEST_COLOR);
         for command in &valid {
             println!("{command}");
         }
+        self.end_color();
         self.prefill = valid.first().cloned();
         for note in &notes {
             println!("{note}");
@@ -250,9 +280,10 @@ impl Conversation {
 
     /// Sends ordinary messages directly to the model with no tools available.
     fn chat(&mut self, message: &str) {
+        let words = translate::word_listing_with(&self.context.user_words);
         let mut messages = vec![json!({
             "role": "system",
-            "content": "You are ForgeFlow, a helpful conversational assistant. Answer the user's message directly. Include a concrete, copyable example only when the user is clearly asking for instructions on how to do something; don't add an example to general questions or direct requests unless requested. In translator mode (messages prefixed with `;`), the translator handles those how-to requests. Keep any ForgeFlow example valid: it is a postfix stack language, and runnable programs are prefixed with a semicolon. For example, a durable variable can be declared by adding `variable prompt` to `_forgeflow/user_words.ff.txt`. After it is loaded, store a prompt with `; \"A watercolor fox\" prompt !` and generate an image with `; \"art/fox.png\" prompt @ make-image` (the output path comes first, then the prompt). `$prompt` refers to a named input inside a user-defined word, not to a durable variable. No tools are available in chat. To run ForgeFlow code, the user starts a message with a semicolon."
+            "content": format!("{}\n\nThese are all the words that exist, written `word ( inputs -- outputs )`. Registers are written R0 to R15. Use only these words in any ForgeFlow example; never invent words, and never use `define`, `end`, `if`, loops other than `[ ... ] each`, or other languages' syntax. Words cannot write files, run commands or branch, so say so plainly if the user asks for that. Project words are defined with `: name ( inputName Type -- outputName Type ) body ;` (for example `: square ( n Int -- result Int ) dup * ;`), or with `; define a function called NAME that DESCRIPTION`, which writes the definition to `_forgeflow/user_words.ff.txt` for the user.\n\n{}", "You are ForgeFlow, a helpful conversational assistant. Answer the user's message directly. Include a concrete, copyable example only when the user is clearly asking for instructions on how to do something; don't add an example to general questions or direct requests unless requested. In translator mode (messages prefixed with `;`), the translator handles those how-to requests. Keep any ForgeFlow example valid: it is a postfix stack language, and runnable programs are prefixed with a semicolon. For example, a durable variable can be declared by adding `variable prompt` to `_forgeflow/user_words.ff.txt`. After it is loaded, store a prompt with `; \"A watercolor fox\" prompt !` and generate an image with `; \"art/fox.png\" prompt @ make-image` (the output path comes first, then the prompt). `$prompt` refers to a named input inside a user-defined word, not to a durable variable. No tools are available in chat. To run ForgeFlow code, the user starts a message with a semicolon.", words)
         })];
         for exchange in &self.history {
             messages.push(json!({"role": "user", "content": exchange.message}));
@@ -261,6 +292,7 @@ impl Conversation {
         messages.push(json!({"role": "user", "content": message}));
 
         let mut output = String::new();
+        self.begin_color(CHAT_COLOR);
         let turn = self.backend.step(
             &messages,
             &[],
@@ -276,6 +308,7 @@ impl Conversation {
                 }
             },
         );
+        self.end_color();
         match turn {
             Ok(turn) => {
                 let assistant_chars = turn.content.len();
@@ -302,20 +335,24 @@ impl Conversation {
 
     /// Translates a semicolon-prefixed request to a checked ForgeFlow program and runs it.
     fn run_program_request(&mut self, request: &str) {
+        if request.trim_start().starts_with(':') {
+            return self.save_definition(request.trim());
+        }
         if is_definition_request(request) {
             return self.initialize_word(request);
         }
         let started = Instant::now();
-        let (program, steps, attempts) = match compile_direct_program(request, &self.context.user_words) {
+        let (program, steps, attempts) = match compile_direct_program(request, &self.context.user_words, self.context.stack_types()) {
             Ok(Some(steps)) => (request.trim().to_string(), steps, 0),
             Err(error) => return eprintln!("error: {error}"),
             Ok(None) => {
-                let translated = match translate::translate_with(
+                let translated = match translate::translate_on_stack(
                     &self.backend,
                     &self.history,
                     request.trim(),
                     &self.context.registers,
                     &self.context.user_words,
+                    &self.context.stack,
                 ) {
                     Ok(translated) => translated,
                     Err(error) => return eprintln!("error: {error}"),
@@ -327,15 +364,22 @@ impl Conversation {
         println!("{}", self.dim(&format!("→ {program}")));
 
         let running = Instant::now();
-        self.context.stack.clear();
         self.context.take_printed();
+        let stack_before = self.context.stack.clone();
         self.context.store_label = program.clone();
+        self.begin_color(RUN_COLOR);
         if let Err(error) = workflow::run_steps(&mut self.context, &steps) {
+            self.context.stack = stack_before;
+            self.end_color();
             eprintln!("error: {error}");
             self.context.printed.push_str(&format!("error: {error}\n"));
+            self.begin_color(RUN_COLOR);
         }
-        for value in std::mem::take(&mut self.context.stack) {
-            self.context.say(&value.to_text());
+        self.end_color();
+        if !self.context.stack.is_empty() {
+            self.begin_color(STACK_COLOR);
+            println!("stack: {}", translate::stack_summary(&self.context.stack));
+            self.end_color();
         }
         println!("{}", self.dim(&timing(translated_in, running.elapsed(), attempts)));
         self.history.push(Exchange {
@@ -345,11 +389,26 @@ impl Conversation {
         });
     }
 
+    /// Checks a written `: name ( ... ) body ;` definition and saves it to the word file.
+    fn save_definition(&mut self, definition: &str) {
+        match crate::user_words::compile_one(&self.context.user_words, "<definition>", definition)
+            .and_then(|_| crate::user_words::add_definition(&self.context.project, definition))
+        {
+            Ok(words) => {
+                let name = definition.split_whitespace().nth(1).unwrap_or("word").to_string();
+                self.context.user_words = words;
+                println!("Defined `{name}`. Call it in a program, for example `; \"x\" {name}`.");
+            }
+            Err(error) => eprintln!("error: {error}"),
+        }
+    }
+
     /// Turns a natural-language definition request into one checked, persistent user word.
     fn initialize_word(&mut self, request: &str) {
+        let words = translate::word_listing_with(&self.context.user_words);
         let mut messages = vec![json!({
             "role": "system",
-            "content": "You are the ForgeFlow word definition initializer. Convert the user's request into exactly one ForgeFlow definition, with no explanation, markdown, or surrounding text. Exact syntax: : name ( inputName Type -- outputName Type ) body ;. Example: : square ( n Int -- result Int ) dup * ;. Inputs are already on the initial data stack, so use stack operations such as dup; do not put words like 'input' in the code. Named inputs may be copied with $inputName. The body must leave exactly the declared outputs. Supported types: String, Int, Bool, List, Register, Address, Any. If the user does not specify an input type and the operation is type-generic (for example dup/drop/swap/print), declare the input as Any rather than guessing String or Int. ForgeFlow is a postfix stack language; use only its normal operators and currently available words. Never invent syntax from another language."
+            "content": format!("{}\n\nThese are the only words the body may call, written `word ( inputs -- outputs )`; nothing else exists (there is no if, begin, open, type, 2dup, write_file or similar). Registers R0 to R15 are written as-is. The definition must end with `;`.\n{}", "You are the ForgeFlow word definition initializer. Convert the user's request into exactly one ForgeFlow definition, with no explanation, markdown, or surrounding text. Exact syntax: : name ( inputName Type -- outputName Type ) body ;. Example: : square ( n Int -- result Int ) dup * ;. Inputs are already on the initial data stack, so use stack operations such as dup; do not put words like 'input' in the code. Named inputs may be copied with $inputName. The body must leave exactly the declared outputs. Supported types: String, Int, Bool, List, Register, Address, Any. If the user does not specify an input type and the operation is type-generic (for example dup/drop/swap/print), declare the input as Any rather than guessing String or Int. ForgeFlow is a postfix stack language; use only its normal operators and currently available words. Never invent syntax from another language.", words)
         })];
         messages.push(json!({"role":"user", "content":request.trim()}));
         let mut last_error = String::new();
@@ -358,7 +417,7 @@ impl Conversation {
             let response = self.backend.step(
                 &messages,
                 &[],
-                &StepOptions { temperature: Some(0.0), max_tokens: Some(256), no_thinking: true, ..StepOptions::default() },
+                &StepOptions { temperature: Some(0.0), max_tokens: Some(400), no_thinking: true, ..StepOptions::default() },
                 &mut |delta| if let Delta::Text(text) = delta { generated.push_str(&text); },
             );
             if let Err(error) = response { return eprintln!("error: could not initialize word: {error}"); }
@@ -402,7 +461,7 @@ fn unwrap_definition(generated: &str) -> &str {
 }
 
 /// Uses valid source after `;` as code directly; natural language falls through to translation.
-fn compile_direct_program(source_text: &str, user_words: &[crate::user_words::UserWord]) -> Result<Option<Vec<Ops>>, String> {
+fn compile_direct_program(source_text: &str, user_words: &[crate::user_words::UserWord], stack: Vec<crate::type_::TypeKind>) -> Result<Option<Vec<Ops>>, String> {
     let source = Source::new("<code>", source_text);
     let Ok(parsed) = parser::parse(&source) else { return Ok(None); };
     let mentions_user_word = parsed.tokens.iter().any(|token| match &token.kind {
@@ -417,7 +476,7 @@ fn compile_direct_program(source_text: &str, user_words: &[crate::user_words::Us
         Err(errors) if mentions_user_word => return Err(errors.iter().map(|e| e.message.as_str()).collect::<Vec<_>>().join("; ")),
         Err(_) => return Ok(None),
     };
-    if let Err(error) = workflow::check_steps(vec![], &steps) {
+    if let Err(error) = workflow::check_steps(stack, &steps) {
         return if mentions_user_word { Err(error) } else { Ok(None) };
     }
     Ok(Some(steps))
@@ -475,9 +534,12 @@ mod definition_request_tests {
             "test.ff",
             ": printTwice ( value Any -- ) dup print print ;",
         ).unwrap();
-        assert!(compile_direct_program("3 printTwice", &words).unwrap().is_some());
-        assert!(compile_direct_program("square", &words).unwrap().is_none());
-        assert!(compile_direct_program("printTwice", &words).is_err());
+        assert!(compile_direct_program("3 printTwice", &words, vec![]).unwrap().is_some());
+        assert!(compile_direct_program("square", &words, vec![]).unwrap().is_none());
+        assert!(compile_direct_program("printTwice", &words, vec![]).is_err());
+        // Values left by earlier programs are on the stack for the next one.
+        assert!(compile_direct_program("dup", &words, vec![]).unwrap().is_none());
+        assert!(compile_direct_program("dup", &words, vec![crate::type_::TypeKind::Int]).unwrap().is_some());
     }
 }
 
