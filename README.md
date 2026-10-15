@@ -21,6 +21,8 @@ forgeflow              # chat in the current directory
 forgeflow models       # local models, with fit and speed estimates for this machine
 forgeflow pull <id>    # resumable download, sha256-verified, into ~/local-models
 forgeflow use <id>     # select the model
+forgeflow image        # image generation settings and local image models
+forgeflow image <id>   # generate images locally with <id>, or `openrouter`
 forgeflow edit <path>  # edit a file beside its pseudocode summary
 forgeflow file.ff      # run a ForgeFlow program
 ```
@@ -110,6 +112,6 @@ The `agent` word (available in `.ff` programs) starts llama-server for the selec
 
 Tool results go into scratch registers (R4-R15), and the model receives a short receipt instead of the value, so small local models keep a small context. Text arguments accept `$R5` to pass a register's value. When scratch is full, the least recently used register is replaced and the receipt says so. Each run's transcript is saved in `_forgeflow/sessions/`.
 
-`_forgeflow/config.json` holds the selected `model`, `image_model`, `ctx`, `port`, and `max_steps`. `image_model` defaults to `recraft/recraft-v4.1-flash`; `make-image` uses it with OpenRouter and reads the API key from `OPENROUTER_API_KEY`. For example, `"art/lantern.png" "A tiny brass fantasy lantern" make-image` generates one square image and returns its project-relative path. Pixel dimensions in the request are not honored; the model chooses its default resolution (Recraft produces roughly 1024×1024 images). Generated raster images are converted to PNG before saving. An agent run is limited to one image generation. Set `endpoint` (and `endpoint_model`) to use another OpenAI-compatible server, such as Ollama, instead of llama-server.
+`_forgeflow/config.json` holds the selected `model`, `image_model`, `ctx`, `port`, and `max_steps`. `image_model` defaults to `recraft/recraft-v4.1-flash`; `make-image` uses it with OpenRouter and reads the API key from `OPENROUTER_API_KEY`. For example, `"art/lantern.png" "A tiny brass fantasy lantern" make-image` generates one square image and returns its project-relative path. Pixel dimensions in the request are not honored; the model chooses its default resolution (Recraft produces roughly 1024×1024 images). Generated raster images are converted to PNG before saving. An agent run is limited to one image generation. To generate images locally instead, select a local image model with `forgeflow image <id>` (or `/image <id>` in chat); `forgeflow image` lists them, and `forgeflow image openrouter` switches back. This sets `image_backend` (`openrouter` or `local`) and `local_image_model` in the config. Local models download with `forgeflow pull <id>` and run through stable-diffusion.cpp's `sd-cli`, found at `~/local-models/stable-diffusion.cpp/build/bin/sd-cli`, on `PATH`, or via `FORGEFLOW_SD_CLI`; build it with `cmake -S . -B build -DSD_METAL=ON && cmake --build build --config Release`. The catalog has `z-image-turbo` (6.2G, 8 steps; about 3 minutes per 1024×1024 image on an M4 Pro) and `chroma1-hd` (10.2G, uncensored, 26 steps). Set `endpoint` (and `endpoint_model`) to use another OpenAI-compatible server, such as Ollama, instead of llama-server.
 
 Environment overrides: `FORGEFLOW_MODELS_DIR` (default `~/local-models`) and `FORGEFLOW_LLAMA_SERVER` (the llama-server binary).

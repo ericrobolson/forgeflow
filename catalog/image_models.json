@@ -1,0 +1,69 @@
+[
+  {
+    "id": "z-image-turbo",
+    "name": "Z-Image Turbo",
+    "license": "apache-2.0",
+    "tags": ["fast", "photo", "text"],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "leejet/Z-Image-Turbo-GGUF",
+        "path": "z_image_turbo-Q4_K.gguf",
+        "size_bytes": 3864250304,
+        "sha256": "14b375ab4f226bc5378f68f37e899ef3c2242b8541e61e2bc1aff40976086fbd"
+      },
+      {
+        "flag": "--llm",
+        "repo": "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+        "path": "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "size_bytes": 2497281120,
+        "sha256": "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/z_image_turbo",
+        "path": "split_files/vae/ae.safetensors",
+        "size_bytes": 335304388,
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38"
+      }
+    ],
+    "steps": 8,
+    "cfg_scale": 1.0,
+    "width": 1024,
+    "height": 1024
+  },
+  {
+    "id": "chroma1-hd",
+    "name": "Chroma1-HD",
+    "license": "apache-2.0",
+    "tags": ["uncensored", "art", "photo"],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "silveroxides/Chroma1-HD-GGUF",
+        "path": "Chroma1-HD-Q4_K_M.gguf",
+        "size_bytes": 5566533792,
+        "sha256": "086f561e371d442b82b2c3689149da75046754c62a35293932cda397fc2bf9d2"
+      },
+      {
+        "flag": "--t5xxl",
+        "repo": "city96/t5-v1_1-xxl-encoder-gguf",
+        "path": "t5-v1_1-xxl-encoder-Q8_0.gguf",
+        "size_bytes": 5061584064,
+        "sha256": "9ec60f6028534b7fe5af439fcb535d75a68592a9ca3fcdeb175ef89e3ee99825"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/z_image_turbo",
+        "path": "split_files/vae/ae.safetensors",
+        "size_bytes": 335304388,
+        "sha256": "afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38"
+      }
+    ],
+    "steps": 26,
+    "cfg_scale": 4.0,
+    "width": 1024,
+    "height": 1024,
+    "extra_args": ["--sampling-method", "euler", "--model-args", "chroma_use_dit_mask=false"]
+  }
+]

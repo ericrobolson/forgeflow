@@ -79,6 +79,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["models"] => run_words(context, vec![Ops::Models]),
         ["pull", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::Pull]),
         ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
+        ["image"] => run_words(context, vec![Ops::ImageModels]),
+        ["image", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseImage]),
         ["edit", path] => Ok(forgeflow::editor::run(&mut context, path)?),
         [path] if !path.starts_with('-') && *path != "help" => run_file(Path::new(path), context),
         _ => {
@@ -93,6 +95,8 @@ const USAGE: &str = "Usage:
   forgeflow models       list local models with fit and speed estimates
   forgeflow pull <id>    download a model
   forgeflow use <id>     select the model
+  forgeflow image        show image generation settings and local image models
+  forgeflow image <id>   generate images locally with <id>, or `openrouter`
   forgeflow edit <path>  edit a file beside its summary
   forgeflow <file.ff>    run a ForgeFlow program";
 

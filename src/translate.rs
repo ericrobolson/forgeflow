@@ -37,6 +37,7 @@ pub fn vocabulary() -> Vec<Ops> {
         Ops::Store,
         Ops::ShowRegisters,
         Ops::Models,
+        Ops::ImageModels,
         Ops::Help,
         Ops::Add,
         Ops::Subtract,
@@ -444,7 +445,9 @@ pub fn help_text_with(user_words: &[UserWord]) -> String {
          \x20 /models         list models with fit and speed estimates\n\
          \x20 /reload         reload project-defined words\n\
          \x20 /clear          clear conversational history\n\
-         \x20 /pull <id>      download a model",
+         \x20 /image         show image generation settings and local image models\n\
+         \x20 /image <id>    generate with a local image model, `openrouter`, or an OpenRouter model ID\n\
+         \x20 /pull <id>      download a model or image model",
         "[ ... ] each"
     )
 }

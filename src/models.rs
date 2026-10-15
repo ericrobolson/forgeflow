@@ -1,12 +1,13 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::device::{self, Device, GB};
+use crate::image_models;
 
 /// Runtime memory beyond weights and KV cache: compute buffers, the server itself.
 const OVERHEAD_BYTES: u64 = 800_000_000;
@@ -187,7 +188,8 @@ pub fn uncatalogued_local_models() -> Vec<LocalModel> {
     };
     for dir in entries.flatten().filter(|e| e.path().is_dir()) {
         let id = dir.file_name().to_string_lossy().into_owned();
-        if catalog.iter().any(|m| m.id == id) {
+        // Image models also hold GGUF files, and are listed by `image_models` instead.
+        if catalog.iter().any(|m| m.id == id) || image_models::find(&id).is_some() {
             continue;
         }
         let Ok(files) = fs::read_dir(dir.path()) else {
@@ -282,7 +284,7 @@ pub fn render_table(device: &Device, ctx: u64, selected: Option<&str>) -> String
         let mut status = vec![];
         if install_path(model).exists() {
             status.push("installed".to_string());
-        } else if partial_path(model).exists() {
+        } else if partial_path(&install_path(model)).exists() {
             status.push("partial".to_string());
         }
         if selected == Some(model.id.as_str()) {
@@ -344,29 +346,51 @@ pub fn gb(bytes: u64) -> String {
     format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64)
 }
 
-fn partial_path(model: &CatalogModel) -> PathBuf {
-    let mut path = install_path(model).into_os_string();
+pub(crate) fn partial_path(path: &Path) -> PathBuf {
+    let mut path = path.as_os_str().to_owned();
     path.push(PARTIAL_SUFFIX);
     path.into()
 }
 
 /// Downloads a catalogued model, resuming a partial download and verifying its sha256.
+/// Image model IDs download every file the image model needs.
 pub fn pull(id: &str, progress: &mut dyn Write) -> Result<PathBuf, String> {
-    let model = find(id).ok_or_else(|| format!("`{id}` is not in the catalog; run `models`"))?;
+    let Some(model) = find(id) else {
+        if image_models::find(id).is_some() {
+            return image_models::pull(id, progress);
+        }
+        return Err(format!("`{id}` is not in the catalog; run `models` or `image_models`"));
+    };
     let final_path = install_path(&model);
     if final_path.exists() {
         writeln!(progress, "{id} is already installed at {}", final_path.display()).ok();
         return Ok(final_path);
     }
-    let partial = partial_path(&model);
+    let label = format!("{} ({}) from {}", model.name, gb(model.size_bytes), model.repo);
+    download(id, &label, &model.url(), model.size_bytes, &model.sha256, &final_path, progress)?;
+    Ok(final_path)
+}
+
+/// Downloads `url` to `final_path` through a `.part` file, resuming one left by an earlier
+/// attempt, and installs it only once its size and sha256 match.
+pub(crate) fn download(
+    id: &str,
+    label: &str,
+    url: &str,
+    size_bytes: u64,
+    sha256: &str,
+    final_path: &Path,
+    progress: &mut dyn Write,
+) -> Result<(), String> {
+    let partial = partial_path(final_path);
     fs::create_dir_all(final_path.parent().expect("install path has a parent"))
         .map_err(|e| e.to_string())?;
     let have = fs::metadata(&partial).map(|m| m.len()).unwrap_or(0);
-    let free = device::free_disk_bytes(&final_path).unwrap_or(u64::MAX);
-    if free < model.size_bytes.saturating_sub(have) {
+    let free = device::free_disk_bytes(final_path).unwrap_or(u64::MAX);
+    if free < size_bytes.saturating_sub(have) {
         return Err(format!(
             "{id} needs {} more disk space but only {} is free",
-            gb(model.size_bytes - have),
+            gb(size_bytes - have),
             gb(free)
         ));
     }
@@ -387,7 +411,7 @@ pub fn pull(id: &str, progress: &mut dyn Write) -> Result<PathBuf, String> {
         .timeout_connect(Some(Duration::from_secs(30)))
         .build()
         .into();
-    let mut request = agent.get(&model.url());
+    let mut request = agent.get(url);
     if have > 0 {
         request = request.header("Range", format!("bytes={have}-"));
     }
@@ -402,7 +426,7 @@ pub fn pull(id: &str, progress: &mut dyn Write) -> Result<PathBuf, String> {
         done = 0;
     }
 
-    writeln!(progress, "Downloading {} ({}) from {}", model.name, gb(model.size_bytes), model.repo).ok();
+    writeln!(progress, "Downloading {label}").ok();
     let mut reader = response.into_body().into_reader();
     let mut buffer = vec![0u8; 1 << 20];
     let started = Instant::now();
@@ -423,35 +447,33 @@ pub fn pull(id: &str, progress: &mut dyn Write) -> Result<PathBuf, String> {
                 progress,
                 "\r  {} / {}  {:>3}%  {:.0} MB/s   ",
                 gb(done),
-                gb(model.size_bytes),
-                done * 100 / model.size_bytes.max(1),
+                gb(size_bytes),
+                done * 100 / size_bytes.max(1),
                 rate / 1e6
             )
             .ok();
             progress.flush().ok();
         }
     }
-    writeln!(progress, "\r  {} / {}  100%{:>20}", gb(done), gb(model.size_bytes), "").ok();
+    writeln!(progress, "\r  {} / {}  100%{:>20}", gb(done), gb(size_bytes), "").ok();
     file.flush().map_err(|e| e.to_string())?;
     drop(file);
 
-    if done != model.size_bytes {
+    if done != size_bytes {
         return Err(format!(
-            "download ended at {done} of {} bytes; run pull again to resume",
-            model.size_bytes
+            "download ended at {done} of {size_bytes} bytes; run pull again to resume"
         ));
     }
     let digest: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
-    if digest != model.sha256 {
+    if digest != sha256 {
         fs::remove_file(&partial).ok();
         return Err(format!(
-            "sha256 mismatch for {id} (expected {}, got {digest}); the partial file was removed",
-            model.sha256
+            "sha256 mismatch for {id} (expected {sha256}, got {digest}); the partial file was removed"
         ));
     }
-    fs::rename(&partial, &final_path).map_err(|e| e.to_string())?;
+    fs::rename(&partial, final_path).map_err(|e| e.to_string())?;
     writeln!(progress, "Verified sha256 and installed {id} at {}", final_path.display()).ok();
-    Ok(final_path)
+    Ok(())
 }
 
 fn hash_prefix(file: &mut File, hasher: &mut Sha256) -> Result<(), String> {

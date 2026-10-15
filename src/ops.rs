@@ -6,7 +6,6 @@ use crate::{
     chat::{self, ChatBackend, Delta, StepOptions},
     config::Config,
     device::Device,
-    image_gen::ImageBackend,
     models,
     type_::{Type, TypeKind},
     util,
@@ -75,6 +74,9 @@ pub enum Ops {
     Models,
     Pull,
     UseModel,
+    ImageModels,
+    /// Selects where `make-image` generates: OpenRouter or a local image model.
+    UseImage,
     /// Runs the tool-calling agent loop on a task.
     Agent,
 }
@@ -115,6 +117,8 @@ impl Ops {
             Ops::Models,
             Ops::Pull,
             Ops::UseModel,
+            Ops::ImageModels,
+            Ops::UseImage,
             Ops::Agent,
         ]
     }
@@ -160,6 +164,8 @@ impl Ops {
             Ops::Models => "models",
             Ops::Pull => "pull",
             Ops::UseModel => "use_model",
+            Ops::ImageModels => "image_models",
+            Ops::UseImage => "use_image",
             Ops::Agent => "agent",
         }
     }
@@ -172,7 +178,7 @@ impl Ops {
             }
             Ops::ListFiles => "List the files (not folders) in a folder relative to the project root, alphabetically.",
             Ops::Summarize => "Summarize a file as high-level pseudocode using its real names, with line ranges. Cached until the file changes.",
-            Ops::MakeImage => "Generate one image with OpenRouter and save it inside the project, using the image model's default dimensions and returned file format.",
+            Ops::MakeImage => "Generate one image, locally with stable-diffusion.cpp or with OpenRouter, and save it inside the project as a PNG.",
             Ops::Each(_) => "Run the [ ] block once per item of a list, with the item on the stack.",
             Ops::RegView => {
                 "Show numbered lines of a register's text. start and end are 1-based and inclusive; at most 200 lines."
@@ -206,6 +212,8 @@ impl Ops {
             Ops::Models => "List local models with size, fit, and speed estimates for this device.",
             Ops::Pull => "Download a catalogued model.",
             Ops::UseModel => "Select the model the agent runs.",
+            Ops::ImageModels => "List local image models and show whether make-image uses OpenRouter or a local model.",
+            Ops::UseImage => "Select where make-image generates: openrouter, an OpenRouter model ID, or a local image model ID.",
             _ => "",
         }
     }
@@ -232,8 +240,7 @@ impl Ops {
                     .ok_or("image output path is not valid UTF-8")?;
                 let path = context.project.resolve(png_relative)?;
                 let config = Config::load(&context.project.folder())?;
-                let image = crate::image_gen::OpenRouterImageBackend::from_environment(&config.image_model)?
-                    .generate(&prompt)?;
+                let image = crate::image_gen::backend(&config)?.generate(&prompt)?;
                 let saved_path = crate::image_gen::save_image(&path, &image)?;
                 let saved_relative = saved_path.strip_prefix(&context.project.root)
                     .map_err(|_| "generated image path is outside the project".to_string())?;
@@ -423,6 +430,16 @@ impl Ops {
                 context.server = None;
                 println!("Selected {id} ({})", path.display());
             }
+            Ops::ImageModels => {
+                let config = Config::load(&context.project.folder())?;
+                let table = crate::image_models::render_table(&config);
+                context.say(&table);
+            }
+            Ops::UseImage => {
+                let choice = pop(context)?.expect_string()?;
+                let selection = crate::image_models::select(&context.project.folder(), &choice)?;
+                context.say(&format!("Images: {selection}"));
+            }
             Ops::Agent => {
                 let task = pop(context)?.expect_string()?;
                 let answer = agent_loop::run(context, &task)?;
@@ -479,8 +496,10 @@ impl Ops {
                 Type::str("replace", "replacement text"),
             ],
             Ops::Pull | Ops::UseModel => vec![Type::str("id", "a model ID from `models`")],
+            Ops::UseImage => vec![Type::str("id", "`openrouter`, an OpenRouter model ID, or an ID from `image_models`")],
             Ops::Agent => vec![Type::str("task", "what the agent should do")],
-            Ops::ReadLine
+            Ops::ImageModels
+            | Ops::ReadLine
             | Ops::StringLiteral(_)
             | Ops::IntLiteral(_)
             | Ops::BoolLiteral(_)
@@ -533,7 +552,9 @@ impl Ops {
             | Ops::ShowRegisters
             | Ops::Models
             | Ops::Pull
-            | Ops::UseModel => vec![],
+            | Ops::UseModel
+            | Ops::ImageModels
+            | Ops::UseImage => vec![],
             Ops::LocalGet(_, kind) => vec![Type::new("local", *kind, "named input")],
             Ops::AddressOf(_) => vec![Type::new("address", Address, "durable memory address")],
             Ops::UserCall { outputs, .. } => outputs.iter().map(|kind| Type::new("output", *kind, "user word output")).collect(),

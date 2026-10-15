@@ -15,8 +15,13 @@ pub struct Config {
     pub endpoint: Option<String>,
     /// The model name sent to `endpoint`.
     pub endpoint_model: Option<String>,
-    /// Image generation model ID, such as `recraft/recraft-v4.1-flash`.
+    /// Where `make-image` generates: OpenRouter with `image_model`, or locally with
+    /// `local_image_model`.
+    pub image_backend: ImageBackendKind,
+    /// OpenRouter image model ID, such as `recraft/recraft-v4.1-flash`.
     pub image_model: String,
+    /// An image model ID from `catalog/image_models.json`.
+    pub local_image_model: String,
     pub ctx: u64,
     pub port: u16,
     pub max_steps: usize,
@@ -28,12 +33,22 @@ impl Default for Config {
             model: None,
             endpoint: None,
             endpoint_model: None,
+            image_backend: ImageBackendKind::OpenRouter,
             image_model: "recraft/recraft-v4.1-flash".into(),
+            local_image_model: "z-image-turbo".into(),
             ctx: 8192,
             port: 8043,
             max_steps: 24,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageBackendKind {
+    #[default]
+    OpenRouter,
+    Local,
 }
 
 impl Config {
@@ -66,5 +81,13 @@ mod tests {
         let config: Config = serde_json::from_str(r#"{"model":"qwen3-8b-q4km"}"#).unwrap();
         assert_eq!(config.model.as_deref(), Some("qwen3-8b-q4km"));
         assert_eq!(config.ctx, Config::default().ctx);
+    }
+
+    #[test]
+    fn image_backend_is_lowercase() {
+        let config: Config = serde_json::from_str(r#"{"image_backend":"local"}"#).unwrap();
+        assert_eq!(config.image_backend, ImageBackendKind::Local);
+        let json = serde_json::to_string(&Config::default()).unwrap();
+        assert!(json.contains(r#""image_backend":"openrouter""#));
     }
 }

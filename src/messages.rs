@@ -158,8 +158,10 @@ impl Conversation {
             ["/model", id] => self.switch_model(id),
             ["/models"] => workflow::run_steps(&mut self.context, &[Ops::Models]),
             ["/pull", id] => models::pull(id, &mut io::stderr()).map(|_| ()),
+            ["/image"] => workflow::run_steps(&mut self.context, &[Ops::ImageModels]),
+            ["/image", id] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral(id.to_string()), Ops::UseImage]),
             _ => Err(format!(
-                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /pull <id>, or /help"
+                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /image, /image <id>, /pull <id>, or /help"
             )),
         };
         if let Err(error) = result {

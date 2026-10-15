@@ -5,6 +5,7 @@ pub mod config;
 pub mod device;
 pub mod editor;
 pub mod image_gen;
+pub mod image_models;
 pub mod messages;
 pub mod models;
 pub mod ops;
