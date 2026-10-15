@@ -52,6 +52,7 @@ pub trait ChatBackend {
 }
 
 /// Any server speaking OpenAI's `/v1/chat/completions`: llama-server, Ollama, LM Studio, vLLM.
+#[derive(Debug, Clone)]
 pub struct OpenAiCompatible {
     pub endpoint: String,
     pub model: String,

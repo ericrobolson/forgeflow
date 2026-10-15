@@ -2,6 +2,8 @@ use std::path::{Component, Path, PathBuf};
 
 const PROJECT_FOLDER: &'static str = "_forgeflow";
 pub const SESSIONS_FOLDER: &str = "sessions";
+/// Cached file summaries, keyed by content hash; see `summary`.
+pub const SUMMARIES_FOLDER: &str = "summaries";
 pub const REGISTERS_FILE: &str = "registers.json";
 pub const MEMORY_FILE: &str = "memory.json";
 pub const SERVER_LOG_FILE: &str = "llama-server.log";
@@ -26,6 +28,7 @@ impl Project {
         std::fs::create_dir_all(&folder)?;
         ignore_entries(&folder, &IGNORED_FILES)?;
         Self::create_ignored_folder(&project.sessions_folder())?;
+        Self::create_ignored_folder(&project.summaries_folder())?;
         Ok(project)
     }
 
@@ -36,6 +39,10 @@ impl Project {
 
     pub fn sessions_folder(&self) -> PathBuf {
         self.folder().join(SESSIONS_FOLDER)
+    }
+
+    pub fn summaries_folder(&self) -> PathBuf {
+        self.folder().join(SUMMARIES_FOLDER)
     }
 
     /// Creates `folder` with a `.gitignore` of `*`, keeping generated files out of git.
@@ -133,6 +140,7 @@ mod tests {
             "config.json\nregisters.json\nmemory.json\nllama-server.log\n"
         );
         assert_eq!(read(project.sessions_folder().join(".gitignore")), "*\n");
+        assert_eq!(read(project.summaries_folder().join(".gitignore")), "*\n");
 
         // Rerunning adds only what is missing and keeps lines added by hand.
         std::fs::write(project.folder().join(".gitignore"), "config.json\nnotes.txt").unwrap();

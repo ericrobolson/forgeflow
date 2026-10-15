@@ -127,6 +127,9 @@ impl Conversation {
     fn command(&mut self, message: &str) {
         let words: Vec<&str> = message.split_whitespace().collect();
         let result = match words.as_slice() {
+            // The rest of the line is the path, so paths may contain spaces.
+            ["/edit", _, ..] => crate::editor::run(&mut self.context, message.trim_start_matches("/edit")),
+            ["/edit"] => Err("usage: /edit <path>".into()),
             ["/clear"] => {
                 self.history.clear();
                 self.context.stack.clear();
@@ -156,7 +159,7 @@ impl Conversation {
             ["/models"] => workflow::run_steps(&mut self.context, &[Ops::Models]),
             ["/pull", id] => models::pull(id, &mut io::stderr()).map(|_| ()),
             _ => Err(format!(
-                "unknown command `{message}`; try /clear, /reload, /model, /model <id>, /models, /pull <id>, or /help"
+                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /pull <id>, or /help"
             )),
         };
         if let Err(error) = result {

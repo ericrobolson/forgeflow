@@ -29,6 +29,7 @@ pub fn vocabulary() -> Vec<Ops> {
         Ops::MakeImage,
         Ops::ListDirectory,
         Ops::ListFiles,
+        Ops::Summarize,
         Ops::Grep,
         Ops::Print,
         Ops::Answer,
@@ -437,6 +438,7 @@ pub fn help_text_with(user_words: &[UserWord]) -> String {
          \n\
          Typing `; help` shows this without asking the model. Chat commands, also answered directly:\n\
          \x20 ? <goal>        suggest commands for a goal without running anything\n\
+         \x20 /edit <path>    edit a file beside its pseudocode summary\n\
          \x20 /model          show the current model and installed ones\n\
          \x20 /model <id>     switch models\n\
          \x20 /models         list models with fit and speed estimates\n\

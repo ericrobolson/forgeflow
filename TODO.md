@@ -13,6 +13,7 @@
 - [ ] Add loading of source files or scaffolding of them + durable workflow state for things like agentic pipelines
 - [ ] Add swap/swizzle/etc (dup, drop, swap done)
 - [ ] Add function definitions
+- [x] File editor with a cached, line-anchored pseudocode summary beside the text (`forgeflow edit`, `/edit`, `summarize`)
 - [ ] Add a visualizer/editor so as you move your cursor over a word it'll show the stack and any errors visually
 - [ ] Conditionals
 - [ ] Run `each` items concurrently on spare server slots

@@ -32,6 +32,15 @@ impl LocalServer {
     /// it; otherwise starts one on the first free port. Ports serving other models, such as
     /// another session's, are skipped rather than disturbed.
     pub fn start(model_path: &Path, base_port: u16, ctx: u64, log_path: &Path) -> Result<Self, String> {
+        Self::launch(model_path, base_port, ctx, log_path, true)
+    }
+
+    /// Like `start`, without progress lines on stderr, for callers that own the screen.
+    pub fn start_quietly(model_path: &Path, base_port: u16, ctx: u64, log_path: &Path) -> Result<Self, String> {
+        Self::launch(model_path, base_port, ctx, log_path, false)
+    }
+
+    fn launch(model_path: &Path, base_port: u16, ctx: u64, log_path: &Path, announce: bool) -> Result<Self, String> {
         let mut free = None;
         for port in base_port..base_port.saturating_add(PORT_RANGE) {
             if !health(port) {
@@ -55,7 +64,9 @@ impl LocalServer {
         )?;
         let log = File::create(log_path).map_err(|e| e.to_string())?;
         let err_log = log.try_clone().map_err(|e| e.to_string())?;
-        eprintln!("Starting llama-server for {} (log: {})", model_path.display(), log_path.display());
+        if announce {
+            eprintln!("Starting llama-server for {} (log: {})", model_path.display(), log_path.display());
+        }
         let child = Command::new(&binary)
             .arg("-m")
             .arg(model_path)
@@ -76,11 +87,11 @@ impl LocalServer {
             model_path: model_path.to_path_buf(),
             port,
         };
-        server.wait_healthy(log_path)?;
+        server.wait_healthy(log_path, announce)?;
         Ok(server)
     }
 
-    fn wait_healthy(&mut self, log_path: &Path) -> Result<(), String> {
+    fn wait_healthy(&mut self, log_path: &Path, announce: bool) -> Result<(), String> {
         let started = Instant::now();
         while started.elapsed() < HEALTH_TIMEOUT {
             if let Some(child) = self.child.as_mut() {
@@ -92,6 +103,9 @@ impl LocalServer {
                 }
             }
             if health(self.port) {
+                if !announce {
+                    return Ok(());
+                }
                 eprintln!("llama-server ready in {:.1}s", started.elapsed().as_secs_f64());
                 return Ok(());
             }

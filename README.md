@@ -21,6 +21,7 @@ forgeflow              # chat in the current directory
 forgeflow models       # local models, with fit and speed estimates for this machine
 forgeflow pull <id>    # resumable download, sha256-verified, into ~/local-models
 forgeflow use <id>     # select the model
+forgeflow edit <path>  # edit a file beside its pseudocode summary
 forgeflow file.ff      # run a ForgeFlow program
 ```
 
@@ -91,9 +92,21 @@ The signature lists named inputs and outputs from bottom to top. `$n` pushes a c
 
 Declare a durable named cell with `variable score`. It pushes an `Address` that can be saved in registers or passed to user-defined words. `@` fetches the cell and `!` stores into it, for example `10 score ! score @ print`. Named cell values are stored in `_forgeflow/memory.json`; register persistence remains separate.
 
+## Editor
+
+`forgeflow edit <path>`, or `/edit <path>` in chat, opens a file full screen with the text on the left and a high-level pseudocode summary on the right, written by the selected model with the file's real module, type, and function names. Each summary block sits beside the lines it describes, and the two panes scroll together; a short overview of the whole file runs across the top. It works on any text file: code in any language, configuration, or prose, where the summary gives the claims and definitions instead.
+
+Keys: Ctrl+S saves, Ctrl+R regenerates the summary, Ctrl+O opens a fuzzy file picker, and Esc closes the editor (press it twice to discard unsaved changes). Option+Left and Option+Right move by word. A path that does not exist yet opens empty and is created on save.
+
+A backtick (`` ` ``) switches to summary mode, where j and k (or Down and Up) jump to the next and previous block, and Left and Right step to the previous and next summary line, skipping blank ones. The selected summary line and its line number in the code are highlighted, and the cursor follows to that line. Entering summary mode on a line with no summary text selects the nearest one. A backtick, Enter, or Esc returns to editing at that line. Because the backtick switches modes, paste a literal one. Tests are listed by name only, one block per test case.
+
+Summaries are cached in `_forgeflow/summaries/` (ignored by git), keyed by a SHA-256 of the file's contents together with the model and the prompt version, so reopening an unchanged file shows its summary at once without starting the model. After you edit, the summary stays until you save, and then it is regenerated. Each request starts from a fresh context and contains only the file. A file that fits in half the context window (`ctx`) is summarized in one request. A longer file is split by token count into overlapping windows, summarized in order with the names found so far carried forward, and then given one overview. When this machine could hold the whole file with a larger `ctx`, the footer says how large. Summaries that use names not found in the file get one correction request, and steps still naming them are dropped.
+
+The `summarize` word returns the same summary as text, so `; summarize src/chat.rs` works in chat, and the agent can call it as a tool to read a summary instead of a whole file.
+
 ## Agent loop
 
-The `agent` word (available in `.ff` programs) starts llama-server for the selected model (reusing one already serving it) and runs the loop in ForgeFlow itself. The model's tools are ForgeFlow words, with schemas generated from each word's typed inputs: `read_file`, `list_directory`, `reg_view`, `reg_search`, `reg_edit`, `reg_store`, and `emit`. File words are confined to the project root.
+The `agent` word (available in `.ff` programs) starts llama-server for the selected model (reusing one already serving it) and runs the loop in ForgeFlow itself. The model's tools are ForgeFlow words, with schemas generated from each word's typed inputs: `read_file`, `list_directory`, `summarize`, `reg_view`, `reg_search`, `reg_edit`, `reg_store`, and `emit`. File words are confined to the project root.
 
 Tool results go into scratch registers (R4-R15), and the model receives a short receipt instead of the value, so small local models keep a small context. Text arguments accept `$R5` to pass a register's value. When scratch is full, the least recently used register is replaced and the receipt says so. Each run's transcript is saved in `_forgeflow/sessions/`.
 

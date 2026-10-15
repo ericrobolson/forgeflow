@@ -50,6 +50,8 @@ pub enum Ops {
     ListDirectory,
     /// Files only, without folders.
     ListFiles,
+    /// Line-anchored pseudocode summary of a file, cached until its contents change.
+    Summarize,
     /// `[ ... ] each`: runs the block once per list item, with the item on the stack.
     Each(Vec<Ops>),
     LocalGet(String, TypeKind),
@@ -97,6 +99,7 @@ impl Ops {
             Ops::MakeImage,
             Ops::ListDirectory,
             Ops::ListFiles,
+            Ops::Summarize,
             Ops::RegView,
             Ops::RegSearch,
             Ops::Grep,
@@ -137,6 +140,7 @@ impl Ops {
             Ops::MakeImage => "make-image",
             Ops::ListDirectory => "list_directory",
             Ops::ListFiles => "list_files",
+            Ops::Summarize => "summarize",
             Ops::Each(_) => "each",
             Ops::LocalGet(_, _) => "local input",
             Ops::AddressOf(_) => "address",
@@ -167,6 +171,7 @@ impl Ops {
                 "List a folder relative to the project root; use . for the root. Folders end with / and come first."
             }
             Ops::ListFiles => "List the files (not folders) in a folder relative to the project root, alphabetically.",
+            Ops::Summarize => "Summarize a file as high-level pseudocode using its real names, with line ranges. Cached until the file changes.",
             Ops::MakeImage => "Generate one image with OpenRouter and save it inside the project, using the image model's default dimensions and returned file format.",
             Ops::Each(_) => "Run the [ ] block once per item of a list, with the item on the stack.",
             Ops::RegView => {
@@ -309,6 +314,11 @@ impl Ops {
                 let text = std::fs::read_to_string(&path).map_err(|e| format!("{relative}: {e}"))?;
                 context.stack.push(Value::String(text));
             }
+            Ops::Summarize => {
+                let relative = pop(context)?.expect_string()?;
+                let summary = crate::summary::for_file(context, &relative)?;
+                context.stack.push(Value::String(crate::summary::to_text(&summary)));
+            }
             Ops::ListDirectory => {
                 let relative = pop(context)?.expect_string()?;
                 let path = context.project.resolve(&relative)?;
@@ -438,7 +448,7 @@ impl Ops {
                 Type::new("value", Any, "the value, or $R5 to copy a register"),
                 Type::new("register", Reference, "the register or address to store into"),
             ],
-            Ops::ReadFile | Ops::ListDirectory | Ops::ListFiles => {
+            Ops::ReadFile | Ops::ListDirectory | Ops::ListFiles | Ops::Summarize => {
                 vec![Type::str("path", "path relative to the project root")]
             }
             Ops::MakeImage => vec![
@@ -501,6 +511,7 @@ impl Ops {
             Ops::Swap => vec![Type::new("b", Any, "a value"), Type::new("a", Any, "a value")],
             Ops::Fetch => vec![Type::new("value", Any, "the register's value")],
             Ops::ReadFile => vec![Type::str("text", "the file's contents")],
+            Ops::Summarize => vec![Type::str("summary", "the file's summary")],
             Ops::MakeImage => vec![Type::str("saved_path", "project-relative path of the generated image")],
             Ops::ListDirectory => vec![Type::new("entries", List, "the folder's entries")],
             Ops::ListFiles => vec![Type::new("files", List, "the folder's files")],

@@ -115,6 +115,16 @@ pub fn estimate(size_bytes: u64, kv_bytes: u64, active_share: f64, device: &Devi
     }
 }
 
+/// The largest per-slot context this device holds comfortably for `model`, in steps of 1024
+/// tokens and capped at the model's own limit.
+pub fn max_ctx(model: &CatalogModel, device: &Device) -> u64 {
+    let budget = (device.model_budget_bytes() as f64 * COMFORTABLE_SHARE) as u64;
+    let free = budget.saturating_sub(model.size_bytes + OVERHEAD_BYTES);
+    let per_token = model.kv_bytes(1) * crate::server::SLOTS;
+    let ctx = if per_token == 0 { model.ctx_max } else { free / per_token };
+    ctx.min(model.ctx_max) / 1024 * 1024
+}
+
 pub fn estimate_model(model: &CatalogModel, device: &Device, ctx: u64) -> Estimate {
     estimate(
         model.size_bytes,
@@ -482,6 +492,17 @@ mod tests {
             assert!(model.active_params_b <= model.params_b, "{}", model.id);
             assert!(model.file.ends_with(".gguf"), "{}", model.id);
         }
+    }
+
+    #[test]
+    fn max_ctx_fits_comfortably_and_respects_the_model_limit() {
+        let model = find("qwen2.5-coder-7b-q4km").unwrap();
+        let device = m4_pro_24gb();
+        let ctx = max_ctx(&model, &device);
+        assert!(ctx > 8192 && ctx <= model.ctx_max && ctx % 1024 == 0, "{ctx}");
+        assert_eq!(estimate_model(&model, &device, ctx).fit, Fit::Fits);
+        let tiny = Device { ram_bytes: 4 * 1024 * 1024 * 1024, ..device };
+        assert_eq!(max_ctx(&model, &tiny), 0);
     }
 
     #[test]

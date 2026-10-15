@@ -79,6 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["models"] => run_words(context, vec![Ops::Models]),
         ["pull", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::Pull]),
         ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
+        ["edit", path] => Ok(forgeflow::editor::run(&mut context, path)?),
         [path] if !path.starts_with('-') && *path != "help" => run_file(Path::new(path), context),
         _ => {
             eprintln!("{USAGE}");
@@ -92,6 +93,7 @@ const USAGE: &str = "Usage:
   forgeflow models       list local models with fit and speed estimates
   forgeflow pull <id>    download a model
   forgeflow use <id>     select the model
+  forgeflow edit <path>  edit a file beside its summary
   forgeflow <file.ff>    run a ForgeFlow program";
 
 fn run_words(mut context: Context, steps: Vec<Ops>) -> Result<(), Box<dyn Error>> {
