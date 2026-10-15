@@ -1,0 +1,2 @@
+: cubed ( n Int -- result Int )
+  dup dup * * ;

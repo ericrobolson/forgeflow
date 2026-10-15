@@ -26,15 +26,27 @@ pub struct UserWord {
 #[derive(Debug)]
 struct RawWord { name: String, inputs: Vec<Parameter>, outputs: Vec<Parameter>, body: Vec<Token>, source: String, variable: bool }
 
+/// The generated file that definitions made in chat are appended to.
+pub const WORD_FILE: &str = "user_words.ff.txt";
+
+/// Renames the earlier `user_words.txt` to `WORD_FILE` unless the new file already exists.
+fn migrate_legacy_word_file(folder: &std::path::Path) {
+    let (old, new) = (folder.join("user_words.txt"), folder.join(WORD_FILE));
+    if old.is_file() && !new.exists() {
+        let _ = std::fs::rename(old, new);
+    }
+}
+
 /// Loads and checks every `.ff` below `_forgeflow`, shallow paths before deeper paths.
 pub fn load(project: &Project) -> Result<Vec<UserWord>, String> {
     let folder = project.folder();
+    migrate_legacy_word_file(&folder);
     let mut files = Vec::new();
     for entry in WalkDir::new(&folder) {
         let entry = entry.map_err(|e| format!("{}: {e}", e.path().unwrap_or(&folder).display()))?;
         if entry.file_type().is_file()
             && (entry.path().extension().is_some_and(|x| x == "ff")
-                || entry.path() == folder.join("user_words.txt"))
+                || entry.path() == folder.join(WORD_FILE))
         {
             files.push(entry.into_path());
         }
@@ -167,7 +179,7 @@ pub fn compile_one(existing: &[UserWord], source: &str, definition: &str) -> Res
 pub fn add_definition(project: &Project, definition: &str) -> Result<Vec<UserWord>, String> {
     let existing = load(project)?;
     let folder = project.folder();
-    let path = folder.join("user_words.txt");
+    let path = folder.join(WORD_FILE);
     let label = path.display().to_string();
     compile_one(&existing, &label, definition)?;
     let prior = std::fs::read_to_string(&path).unwrap_or_default();
@@ -390,7 +402,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("forgeflow-words-{}", std::process::id())); let _ = std::fs::remove_dir_all(&root);
         let project = Project::initialize(&root).unwrap();
         std::fs::write(project.folder().join("z.ff"), ": z ( -- ) ;").unwrap();
-        std::fs::write(project.folder().join("user_words.txt"), ": custom ( -- ) ;").unwrap();
+        std::fs::write(project.folder().join(WORD_FILE), ": custom ( -- ) ;").unwrap();
         std::fs::create_dir_all(project.folder().join("nested")).unwrap();
         std::fs::write(project.folder().join("nested/a.ff"), ": a ( -- ) ;").unwrap();
         std::fs::write(project.folder().join("ignored.txt"), "bad").unwrap();
@@ -434,7 +446,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("forgeflow-invalid-word-{}", uuid::Uuid::now_v7()));
         let project = Project::initialize(&root).unwrap();
         add_definition(&project, ": square ( n Int -- result Int ) dup * ;").unwrap();
-        let path = project.folder().join("user_words.txt");
+        let path = project.folder().join(WORD_FILE);
         let before = std::fs::read(&path).unwrap();
         assert!(add_definition(&project, ": square ( n Int -- result Int ) dup ;").is_err());
         assert!(add_definition(&project, ": broken ( n Int -- result Int ) unknown ;").is_err());

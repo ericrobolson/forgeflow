@@ -29,7 +29,7 @@
 
 ## User-defined words
 
-- [x] Add Forth-style word definitions in recursively discovered `_forgeflow/**/*.ff` files and `_forgeflow/user_words.txt`, with checked named stack effects, cross-file calls, tail-call recursion, durable named address cells, agent tools, and `/reload`.
+- [x] Add Forth-style word definitions in recursively discovered `_forgeflow/**/*.ff` files and `_forgeflow/user_words.ff.txt`, with checked named stack effects, cross-file calls, tail-call recursion, durable named address cells, agent tools, and `/reload`.
 
 ## Typed entity data for small games
 

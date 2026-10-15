@@ -5,8 +5,7 @@ Concatenative agentic orchestration workflow builder.
 
 ## Installation
 
-Run `cargo build --release`
-Then `cp target/release/forgeflow ~/bin/forgeflow`
+Run `make install`, which builds and copies the binary to `~/bin/forgeflow`. (For a release build, run `cargo build --release` and copy `target/release/forgeflow` there instead.) After changing the source, run `make install` again; the `forgeflow` command runs that installed copy.
 Then add 
 ```
 forgeflow() { ~/bin/forgeflow $@ }
@@ -46,13 +45,27 @@ translate 401 ms · run 0 ms
 
 The chat assistant receives conversational history and no function tools. Semicolon-prefixed requests use a constrained translator; its programs are checked before running, and invalid programs get one correction attempt. Type `; help` to see the available vocabulary.
 
-The code vocabulary includes file and directory reads, register memory, arithmetic, and `[ ... ] each` loops. Programs can also use `agent` to start the tool-calling loop. Ordinary chat messages never run these words implicitly.
+The code vocabulary includes file and directory reads, register memory (name a register as `R0` to `R15`, then use `@` to fetch and `!` to store), arithmetic, and `[ ... ] each` loops. Programs can also use `agent` to start the tool-calling loop. Ordinary chat messages never run these words implicitly.
+
+### Suggest mode
+
+Start a message with `?` to ask which commands to use for a goal. Nothing is run. The model is shown the current vocabulary, including project-defined words, and replies with one to three candidate commands; each is compiled and type-checked first, with one retry on errors, and invalid ones are dropped. The first valid command is placed on the next input line, so press Enter to run it or edit it first:
+
+```
+> ? how do i make an image
+; "art/image.png" "an image" make-image
+> ; "art/image.png" "an image" make-image█
+```
+
+If a word you need doesn't exist, the suggestion may include a `; define a function called NAME that ...` line, which defines the word when you run it (see below). If no word can do the job, the model says so, for example when searching for text across files, since there is no project-wide search word yet. The prefill works in the interactive terminal only. A bare `?` is an ordinary chat message.
 
 ### Project-defined words
 
-Put word definitions in any `.ff` file under `_forgeflow/`; nested folders are searched too. Files are loaded shallowest first and then by path, and definitions can call words from any discovered file. The generated `_forgeflow/user_words.txt` file is also loaded as ForgeFlow source and can be edited as plain text in Zed. A definition has a checked stack signature:
+Put word definitions in any `.ff` file under `_forgeflow/`; nested folders are searched too. Files are loaded shallowest first and then by path, and definitions can call words from any discovered file. The generated `_forgeflow/user_words.ff.txt` file is also loaded as ForgeFlow source and can be edited as plain text in Zed. (A file named `user_words.txt` from earlier versions is renamed to this automatically.)
 
-In the interactive prompt, initialize a word from a natural-language request with `; define ...`. ForgeFlow asks the model for one typed definition, validates it, saves it to `_forgeflow/user_words.txt`, and activates it immediately. For example, `; define a function called square which duplicates and multiplies its input` creates a persistent `square` word; call it with `; 3 square`. Invalid generated definitions are rejected without changing the saved file.
+In the interactive prompt, initialize a word from a natural-language request with `; define ...`; `? define ...` puts that command on the input line without running it. ForgeFlow asks the model for one typed definition, validates it, saves it to `_forgeflow/user_words.ff.txt`, and activates it immediately. For example, `; define a function called square which duplicates and multiplies its input` creates a persistent `square` word; call it with `; 3 square`. Invalid generated definitions are rejected without changing the saved file.
+
+A definition has a checked stack signature:
 
 ```forth
 : double ( n Int -- result Int ) $n $n + swap drop ;

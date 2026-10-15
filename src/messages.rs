@@ -36,6 +36,8 @@ pub struct Conversation {
     history: Vec<Exchange>,
     context_limit: u64,
     styled: bool,
+    /// Text to place on the next input line, set by suggest mode.
+    prefill: Option<String>,
 }
 
 /// Start a conversation with the selected model.
@@ -61,6 +63,7 @@ pub fn run(mut context: Context) -> Result<(), Box<dyn Error>> {
         history: vec![],
         context_limit: config.ctx,
         styled: io::stdout().is_terminal(),
+        prefill: None,
     };
     if terminal {
         run_terminal(&mut conversation)
@@ -173,14 +176,83 @@ impl Conversation {
         if let Some(request) = message.trim_start().strip_prefix(';') {
             return self.run_program_request(request);
         }
+        if let Some(goal) = message.trim_start().strip_prefix('?').map(str::trim).filter(|goal| !goal.is_empty()) {
+            if is_definition_request(goal) {
+                println!("; {goal}");
+                self.prefill = Some(format!("; {goal}"));
+                return;
+            }
+            return self.suggest(goal);
+        }
         self.chat(message);
+    }
+
+    /// Suggest mode: streams candidate commands for a goal. Nothing is run or recorded.
+    fn suggest(&mut self, goal: &str) {
+        let mut messages = translate::suggest_messages_with(goal, &self.context.user_words);
+        let mut valid: Vec<String> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        for attempt in 0..2 {
+            let mut generated = String::new();
+            let result = self.backend.step(
+                &messages,
+                &[],
+                &StepOptions { slot: Some(crate::server::ANSWER_SLOT), temperature: Some(0.0), no_thinking: true, ..StepOptions::default() },
+                &mut |delta| {
+                    if let Delta::Text(text) = delta {
+                        generated.push_str(&text);
+                    }
+                },
+            );
+            if let Err(error) = result {
+                return eprintln!("error: {error}");
+            }
+            let mut errors = Vec::new();
+            for line in generated.lines().map(|line| line.trim().trim_matches('`').trim()).filter(|line| !line.is_empty()) {
+                let Some(program) = line.strip_prefix(';').map(str::trim) else {
+                    notes.push(line.to_string());
+                    continue;
+                };
+                if is_definition_request(program) {
+                    valid.push(format!("; {program}"));
+                    continue;
+                }
+                let filled = |r: usize| self.context.registers.is_filled(r);
+                match translate::compile_with(program, &filled, &self.context.user_words) {
+                    Ok(_) => valid.push(format!("; {program}")),
+                    Err(error) => errors.push(format!("`; {program}`: {error}")),
+                }
+            }
+            if !valid.is_empty() || !notes.is_empty() || errors.is_empty() || attempt == 1 {
+                for error in errors {
+                    println!("{}", self.dim(&format!("rejected: {error}")));
+                }
+                break;
+            }
+            messages.push(json!({"role": "assistant", "content": generated}));
+            messages.push(json!({"role": "user", "content": format!(
+                "Those failed to compile: {}. Only the listed words exist, and each word takes its inputs from the stack in the order shown (for example `\"out.png\" \"prompt\" make-image`). Reply with corrected `; ` commands only.",
+                errors.join("; ")
+            )}));
+        }
+        valid.dedup();
+        for command in &valid {
+            println!("{command}");
+        }
+        self.prefill = valid.first().cloned();
+        for note in &notes {
+            println!("{note}");
+        }
+        if valid.is_empty() && notes.is_empty() {
+            println!("{}", self.dim("no valid command suggestions"));
+        }
     }
 
     /// Sends ordinary messages directly to the model with no tools available.
     fn chat(&mut self, message: &str) {
         let mut messages = vec![json!({
             "role": "system",
-            "content": "You are ForgeFlow, a helpful conversational assistant. Answer the user's message directly. Include a concrete, copyable example only when the user is clearly asking for instructions on how to do something; don't add an example to general questions or direct requests unless requested. In translator mode (messages prefixed with `;`), the translator handles those how-to requests. Keep any ForgeFlow example valid: it is a postfix stack language, and runnable programs are prefixed with a semicolon. For example, a durable variable can be declared by adding `variable prompt` to `_forgeflow/user_words.txt`. After it is loaded, store a prompt with `; \"A watercolor fox\" prompt !` and generate an image with `; \"art/fox.png\" prompt @ make-image` (the output path comes first, then the prompt). `$prompt` refers to a named input inside a user-defined word, not to a durable variable. No tools are available in chat. To run ForgeFlow code, the user starts a message with a semicolon."
+            "content": "You are ForgeFlow, a helpful conversational assistant. Answer the user's message directly. Include a concrete, copyable example only when the user is clearly asking for instructions on how to do something; don't add an example to general questions or direct requests unless requested. In translator mode (messages prefixed with `;`), the translator handles those how-to requests. Keep any ForgeFlow example valid: it is a postfix stack language, and runnable programs are prefixed with a semicolon. For example, a durable variable can be declared by adding `variable prompt` to `_forgeflow/user_words.ff.txt`. After it is loaded, store a prompt with `; \"A watercolor fox\" prompt !` and generate an image with `; \"art/fox.png\" prompt @ make-image` (the output path comes first, then the prompt). `$prompt` refers to a named input inside a user-defined word, not to a durable variable. No tools are available in chat. To run ForgeFlow code, the user starts a message with a semicolon."
         })];
         for exchange in &self.history {
             messages.push(json!({"role": "user", "content": exchange.message}));
@@ -590,9 +662,9 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                             history_position = None;
                             history_draft.clear();
                             submission += 1;
-                            current_line.clear();
-                            cursor = 0;
-                            print!("> ");
+                            current_line = conversation.prefill.take().unwrap_or_default();
+                            cursor = current_line.chars().count();
+                            redraw_input(&mut stdout, true, &current_line, cursor)?;
                         }
                     }
                     KeyCode::Up if buffer.is_empty() && !input_history.is_empty() => {

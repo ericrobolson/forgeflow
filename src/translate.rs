@@ -290,7 +290,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
          Interpret the current request first; previous output must not change what operation the user asked for. \
          \"print directory\" or \"list the current directory\" means \".\" list_directory print.\n\
          If the user asks to generate an image and gives an output filename, call `make-image` exactly once. Do not answer with drawing code, instructions, or `print` strings. Its stack order is path, prompt, `make-image`; it requests a square image at the selected model's default resolution, so do not promise requested pixel dimensions.\n\
-         Only when the user is clearly asking for instructions on how to do something, use `answer` to give a concise explanation with a copyable, valid example. Recognize that intent across natural phrasings; do not depend on exact wording. For other requests, translate the requested action directly without adding an unsolicited tutorial. Use the examples below as patterns; don't turn a how-to question into a printout of a word's vocabulary description. Distinguish named cells (`variable name` declared in `_forgeflow/user_words.txt`, then `value name !` and `name @`) from registers (`value R0 !` and `R0 @`). `!` stores the value into the address/register on its right.\n\
+         Only when the user is clearly asking for instructions on how to do something, use `answer` to give a concise explanation with a copyable, valid example. Recognize that intent across natural phrasings; do not depend on exact wording. For other requests, translate the requested action directly without adding an unsolicited tutorial. Use the examples below as patterns; don't turn a how-to question into a printout of a word's vocabulary description. Distinguish named cells (`variable name` declared in `_forgeflow/user_words.ff.txt`, then `value name !` and `name @`) from registers (`value R0 !` and `R0 @`). `!` stores the value into the address/register on its right.\n\
          To reply to the user, print a string or use answer.\n\
          \n\
          Words ( inputs -- outputs ):\n\
@@ -298,6 +298,37 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
          [ ... ] each ( items -- ) Run the block once per item of a list, with the item on the stack. \
          The block must use the item up, for example with print or answer, and cannot contain another block."
     )
+}
+
+/// Prompt for suggest mode (`? ...`): the model proposes programs to run instead of
+/// emitting one, so it can explain and admit when the vocabulary cannot do the task.
+pub fn suggest_prompt_with(user_words: &[UserWord]) -> String {
+    format!(
+        "{}\n\n\
+         SUGGEST MODE overrides the instruction above to output only a program. The user describes a goal and wants the commands to run. \
+         Reply with one to three candidate programs, one per line, each prefixed with `; ` (for example `; \"src\" list_directory print`), \
+         and nothing else: no backticks, no explanations. Use only the words listed above. \
+         When a reusable word that does not exist yet would help, suggest a definition command on its own line, before the commands that call it: \
+         `; define a function called NAME that DESCRIPTION` in plain English (for example `; define a function called cubed that duplicates twice and multiplies twice`). \
+         Nothing is saved until the user runs it.\n\
+         If no listed word can do the job, reply with a single plain sentence saying so instead of inventing words. \
+         Nothing is executed.",
+        system_prompt_with(user_words)
+    )
+}
+
+/// Messages for suggest mode: the prompt, then worked examples shown as `; ` commands.
+pub fn suggest_messages_with(goal: &str, user_words: &[UserWord]) -> Vec<Json> {
+    let mut messages = vec![json!({"role": "system", "content": suggest_prompt_with(user_words)})];
+    for (user, program) in EXAMPLES {
+        if user.starts_with('[') || program == "help" || program.ends_with("answer") || program.contains("print\"") && !program.contains("list") {
+            continue;
+        }
+        messages.push(json!({"role": "user", "content": user}));
+        messages.push(json!({"role": "assistant", "content": format!("; {program}")}));
+    }
+    messages.push(json!({"role": "user", "content": goal}));
+    messages
 }
 
 /// Example turns placed before the conversation; small models imitate real turns far
@@ -317,7 +348,7 @@ pub const EXAMPLES: [(&str, &str); 19] = [
     ("explain what a monad is", r#""" "Explain what a monad is." answer"#),
     (
         "how do i store a value in a variable",
-        r#""Named cells: add `variable score` to `_forgeflow/user_words.txt`, then store with `; 10 score !` and fetch with `; score @ print`. Registers need no declaration: use `; \"Sup\" R0 !` to store and `; R0 @ print` to fetch. The value comes before the variable or register, then `!`." "How do I store a value in a variable? Give a runnable example." answer"#,
+        r#""Named cells: add `variable score` to `_forgeflow/user_words.ff.txt`, then store with `; 10 score !` and fetch with `; score @ print`. Registers need no declaration: use `; \"Sup\" R0 !` to store and `; R0 @ print` to fetch. The value comes before the variable or register, then `!`." "How do I store a value in a variable? Give a runnable example." answer"#,
     ),
     (
         "how do i get a value from a register",
@@ -390,9 +421,11 @@ pub fn help_text_with(user_words: &[UserWord]) -> String {
          For example:\n{examples}\n\
          \n\
          Words ( inputs -- outputs ):\n{words}\n\
+         \x20 R0 … R15       ( -- register ) Name a register; use with @ to fetch and ! to store, e.g. \"hi\" R0 ! then R0 @ print\n\
          \x20 {:<14} ( items -- ) Run the block once per item of a list, with the item on the stack.\n\
          \n\
          Typing `; help` shows this without asking the model. Chat commands, also answered directly:\n\
+         \x20 ? <goal>        suggest commands for a goal without running anything\n\
          \x20 /model          show the current model and installed ones\n\
          \x20 /model <id>     switch models\n\
          \x20 /models         list models with fit and speed estimates\n\
