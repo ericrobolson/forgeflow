@@ -25,6 +25,7 @@ fn toolset() -> Vec<(Ops, ResultMode)> {
     vec![
         (Ops::ReadFile, ResultMode::Register),
         (Ops::MakeImage, ResultMode::Inline),
+        (Ops::EditImage, ResultMode::Inline),
         (Ops::ListDirectory, ResultMode::Register),
         (Ops::Summarize, ResultMode::Register),
         (Ops::RegView, ResultMode::Inline),
@@ -351,6 +352,9 @@ mod tests {
             user_words: vec![],
             local_frames: vec![],
             call_depth: 0,
+            sink: Box::new(crate::events::Recorder::default()),
+            say_kind: crate::events::Kind::Run,
+            web: None,
         }
     }
 
@@ -369,9 +373,9 @@ mod tests {
         let names: Vec<_> = schemas.iter().map(|s| s["function"]["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
-            ["read_file", "make-image", "list_directory", "summarize", "reg_view", "reg_search", "reg_edit", "reg_store", "emit"]
+            ["read_file", "make-image", "edit-image", "list_directory", "summarize", "reg_view", "reg_search", "reg_edit", "reg_store", "emit"]
         );
-        let reg_view = &schemas[4]["function"]["parameters"];
+        let reg_view = &schemas[5]["function"]["parameters"];
         assert_eq!(reg_view["required"], json!(["register"]));
         assert_eq!(reg_view["properties"]["start"]["type"], "integer");
     }

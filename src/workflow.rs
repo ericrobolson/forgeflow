@@ -122,6 +122,12 @@ pub struct Context {
     pub user_words: Vec<crate::user_words::UserWord>,
     pub local_frames: Vec<std::collections::HashMap<String, Value>>,
     pub call_depth: usize,
+    /// Where output goes: the terminal, or a web client's turn.
+    pub sink: Box<dyn crate::events::Sink>,
+    /// How `say` styles program output; `/` commands show as commands.
+    pub say_kind: crate::events::Kind,
+    /// Starts and stops the web UI, in a chat session.
+    pub web: Option<crate::web::WebControl>,
 }
 
 impl Context {
@@ -140,14 +146,26 @@ impl Context {
             user_words: vec![],
             local_frames: vec![],
             call_depth: 0,
+            sink: Box::new(crate::events::Terminal::new()),
+            say_kind: crate::events::Kind::Run,
+            web: None,
         })
     }
 
     /// Shows text to the user and records it for the conversation history.
     pub fn say(&mut self, text: &str) {
-        println!("{text}");
+        self.sink.emit(crate::events::Event::Line(self.say_kind, text.to_string()));
         self.printed.push_str(text);
         self.printed.push('\n');
+    }
+
+    pub fn emit(&mut self, event: crate::events::Event) {
+        self.sink.emit(event);
+    }
+
+    /// A progress line for slow work; not recorded in the conversation history.
+    pub fn progress(&mut self, text: impl Into<String>) {
+        self.sink.emit(crate::events::Event::Line(crate::events::Kind::Progress, text.into()));
     }
 
     pub fn take_printed(&mut self) -> String {

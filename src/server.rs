@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::toolchain::{self, Tool};
+
 /// Server slots, each with its own prompt cache: translation and replies use separate
 /// slots so a reply never evicts the translator's cached prompt.
 pub const SLOTS: u64 = 2;
@@ -18,11 +20,25 @@ const HEALTH_POLL: Duration = Duration::from_millis(500);
 #[derive(Debug)]
 pub struct LocalServer {
     child: Option<Child>,
+    /// Stops the child if ForgeFlow ends without dropping this, such as when killed.
+    reaper: Option<crate::reaper::Reaper>,
     pub model_path: PathBuf,
     pub port: u16,
 }
 
 impl LocalServer {
+    /// Whether this session started the server (and so may stop it), rather than reusing
+    /// one another session runs.
+    pub fn is_owned(&self) -> bool {
+        self.child.is_some()
+    }
+
+    /// Whether the server still answers; one this session reused may have been stopped by
+    /// the session that owns it.
+    pub fn is_healthy(&self) -> bool {
+        health(self.port)
+    }
+
     pub fn endpoint(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.port)
     }
@@ -50,6 +66,7 @@ impl LocalServer {
             if served_model(port).is_some_and(|served| same_model(&served, model_path)) {
                 return Ok(Self {
                     child: None,
+                    reaper: None,
                     model_path: model_path.to_path_buf(),
                     port,
                 });
@@ -59,9 +76,12 @@ impl LocalServer {
             "ports {base_port}-{} are all serving other models; stop one or change `port` in _forgeflow/config.json",
             base_port.saturating_add(PORT_RANGE - 1)
         ))?;
-        let binary = find_binary().ok_or(
-            "llama-server not found. Install it with `brew install llama.cpp`, or set FORGEFLOW_LLAMA_SERVER",
-        )?;
+        // Building takes minutes and prints progress, so only callers that own stderr may.
+        let binary = if announce {
+            toolchain::ensure(Tool::LlamaServer)?
+        } else {
+            toolchain::find(Tool::LlamaServer).ok_or_else(|| toolchain::missing(Tool::LlamaServer))?
+        };
         let log = File::create(log_path).map_err(|e| e.to_string())?;
         let err_log = log.try_clone().map_err(|e| e.to_string())?;
         if announce {
@@ -82,8 +102,11 @@ impl LocalServer {
             .stderr(err_log)
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", binary.display()))?;
+        track_child(child.id());
+        let reaper = crate::reaper::watch(child.id());
         let mut server = Self {
             child: Some(child),
+            reaper,
             model_path: model_path.to_path_buf(),
             port,
         };
@@ -118,24 +141,44 @@ impl LocalServer {
 impl Drop for LocalServer {
     fn drop(&mut self) {
         if let Some(mut child) = self.child.take() {
+            untrack_child(child.id());
             let _ = child.kill();
             let _ = child.wait();
         }
+        // Stopped here, so the watcher has nothing to do.
+        drop(self.reaper.take());
     }
 }
 
-fn find_binary() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("FORGEFLOW_LLAMA_SERVER") {
-        return Some(path.into());
+/// Child processes to stop if ForgeFlow is interrupted, since destructors do not run then.
+static CHILDREN: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new());
+
+pub fn track_child(pid: u32) {
+    if let Ok(mut children) = CHILDREN.lock() {
+        children.push(pid);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let built = home.join("local-models/llama.cpp/build/bin/llama-server");
-    if built.is_file() {
-        return Some(built);
+}
+
+pub fn untrack_child(pid: u32) {
+    if let Ok(mut children) = CHILDREN.lock() {
+        children.retain(|&p| p != pid);
     }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join("llama-server"))
-        .find(|candidate| candidate.is_file())
+}
+
+/// On Ctrl+C, a termination signal, or the terminal closing, stops the model servers and
+/// image jobs this process started and restores the terminal before exiting, so no
+/// llama-server is left holding GPU memory. (A process killed outright with SIGKILL still
+/// cannot clean up.)
+pub fn stop_children_on_exit() {
+    let _ = ctrlc::set_handler(|| {
+        let children: Vec<u32> = CHILDREN.lock().map(|c| c.clone()).unwrap_or_default();
+        for pid in children {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+        let _ = crossterm::terminal::disable_raw_mode();
+        eprintln!();
+        std::process::exit(130);
+    });
 }
 
 fn agent(timeout: Duration) -> ureq::Agent {

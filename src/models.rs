@@ -249,10 +249,8 @@ pub fn render_table(device: &Device, ctx: u64, selected: Option<&str>) -> String
     let picks = recommend(&models, device, ctx);
     let free = device::free_disk_bytes(&models_dir());
     let mut out = format!(
-        "{} · {} RAM · ~{} model budget · {} free in {}\nEstimates assume a {ctx}-token context; ★ marks recommendations.\n\n",
-        device.chip,
-        gb(device.ram_bytes),
-        gb(device.model_budget_bytes()),
+        "{} · {} free in {}\nEstimates assume a {ctx}-token context; ★ marks recommendations.\n\n",
+        device.summary(),
         free.map(gb).unwrap_or_else(|| "?".into()),
         models_dir().display(),
     );
@@ -498,6 +496,7 @@ mod tests {
             ram_bytes: 24 * 1024 * 1024 * 1024,
             apple_silicon: true,
             bandwidth_gbps: Some(273.0),
+            gpu: None,
         }
     }
 

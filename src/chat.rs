@@ -137,7 +137,7 @@ pub fn connect(context: &mut Context) -> Result<(OpenAiCompatible, Config), Stri
         "no model selected. Run `forgeflow models` to see options, then `forgeflow pull <id>` and `forgeflow use <id>`",
     )?;
     let (path, _) = models::resolve_installed(id)?;
-    if context.server.as_ref().is_none_or(|s| s.model_path != path) {
+    if context.server.as_ref().is_none_or(|s| s.model_path != path || !s.is_healthy()) {
         context.server = None;
         let log = context.project.folder().join(SERVER_LOG_FILE);
         context.server = Some(LocalServer::start(&path, config.port, config.ctx, &log)?);

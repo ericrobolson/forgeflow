@@ -109,13 +109,14 @@ pub fn run_with(
             messages.push(assistant);
 
             for call in &turn.tool_calls {
-                let outcome = if call.name == "make-image" && image_generation_calls >= 1 {
+                let makes_image = call.name == "make-image" || call.name == "edit-image";
+                let outcome = if makes_image && image_generation_calls >= 1 {
                     tools::ToolOutcome {
                         content: "error: this agent run can generate at most one image".into(),
                         is_error: true,
                     }
                 } else {
-                    if call.name == "make-image" {
+                    if makes_image {
                         image_generation_calls += 1;
                     }
                     tools::execute(context, &call.name, &call.arguments)
@@ -244,6 +245,9 @@ mod tests {
             user_words: vec![],
             local_frames: vec![],
             call_depth: 0,
+            sink: Box::new(crate::events::Recorder::default()),
+            say_kind: crate::events::Kind::Run,
+            web: None,
         }
     }
 

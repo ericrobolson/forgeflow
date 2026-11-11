@@ -22,8 +22,18 @@ pub struct Config {
     pub image_model: String,
     /// An image model ID from `catalog/image_models.json`.
     pub local_image_model: String,
+    /// The local edit model `edit-image` runs, from `catalog/image_models.json`.
+    pub local_edit_model: String,
+    /// The video model `make-video` runs, from `catalog/image_models.json`.
+    pub local_video_model: String,
+    /// `draft` (512×512, quick) or `full` (the model's resolution, interpolated and upscaled).
+    pub video_quality: String,
+    /// How long `make-video` makes videos, in seconds; 0 for one default segment per keyframe pair.
+    pub video_seconds: u32,
     pub ctx: u64,
     pub port: u16,
+    /// Where `serve` listens for browsers.
+    pub web_port: u16,
     pub max_steps: usize,
 }
 
@@ -36,8 +46,13 @@ impl Default for Config {
             image_backend: ImageBackendKind::OpenRouter,
             image_model: "recraft/recraft-v4.1-flash".into(),
             local_image_model: "z-image-turbo".into(),
+            local_edit_model: "qwen-image-edit-2511".into(),
+            local_video_model: "wan2.2-vace-fun-nsfw".into(),
+            video_quality: "draft".into(),
+            video_seconds: 0,
             ctx: 8192,
             port: 8043,
+            web_port: 8090,
             max_steps: 24,
         }
     }

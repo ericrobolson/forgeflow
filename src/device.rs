@@ -7,8 +7,22 @@ pub struct Device {
     pub chip: String,
     pub ram_bytes: u64,
     pub apple_silicon: bool,
-    /// Memory bandwidth in GB/s, when the chip is known.
+    /// Memory bandwidth in GB/s of whatever runs the model (the GPU when there is a
+    /// discrete one), when known.
     pub bandwidth_gbps: Option<f64>,
+    /// A discrete GPU that llama-server offloads layers to.
+    pub gpu: Option<Gpu>,
+}
+
+/// A discrete NVIDIA GPU, as reported by `nvidia-smi`. With several cards the memory
+/// is summed, since llama.cpp splits layers across them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gpu {
+    pub name: String,
+    pub count: usize,
+    pub vram_bytes: u64,
+    /// CUDA compute capability without the dot, such as "86" for an RTX 3090.
+    pub compute_caps: Vec<String>,
 }
 
 impl Device {
@@ -24,6 +38,7 @@ impl Device {
                 chip,
                 ram_bytes,
                 apple_silicon,
+                gpu: None,
             }
         } else {
             let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
@@ -38,13 +53,47 @@ impl Device {
                 ram_bytes: parse_meminfo_total(&meminfo).unwrap_or(0),
                 apple_silicon: false,
                 bandwidth_gbps: None,
+                gpu: None,
             }
+            .with_gpu(probe_nvidia())
         }
+    }
+
+    /// Runs models on `gpu` when there is one, taking its bandwidth for speed estimates.
+    pub fn with_gpu(self, gpu: Option<Gpu>) -> Self {
+        match gpu {
+            Some(gpu) => Self {
+                bandwidth_gbps: nvidia_bandwidth_gbps(&gpu.name),
+                gpu: Some(gpu),
+                ..self
+            },
+            None => self,
+        }
+    }
+
+    /// One line describing the machine for model listings.
+    pub fn summary(&self) -> String {
+        let gpu = self.gpu.as_ref().map(|g| {
+            let count = if g.count > 1 { format!("{}× ", g.count) } else { String::new() };
+            format!(" · {count}{} {} VRAM", g.name, crate::models::gb(g.vram_bytes))
+        });
+        format!(
+            "{} · {} RAM{} · ~{} model budget",
+            self.chip,
+            crate::models::gb(self.ram_bytes),
+            gpu.unwrap_or_default(),
+            crate::models::gb(self.model_budget_bytes()),
+        )
     }
 
     /// Bytes a model may use. Apple Silicon lets the GPU wire about 2/3 of RAM up to
     /// 36 GB and 3/4 above; elsewhere leave room for the OS and other programs.
+    /// With a discrete GPU every layer is offloaded, so the model must fit in VRAM, less
+    /// a margin for the display and the CUDA context.
     pub fn model_budget_bytes(&self) -> u64 {
+        if let Some(gpu) = &self.gpu {
+            return (gpu.vram_bytes as f64 * 0.9) as u64;
+        }
         let fraction = if !self.apple_silicon {
             0.6
         } else if self.ram_bytes <= 36 * GB {
@@ -102,6 +151,98 @@ pub fn apple_bandwidth_gbps(chip: &str) -> Option<f64> {
         .map(|(_, gbps)| *gbps)
 }
 
+fn probe_nvidia() -> Option<Gpu> {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_nvidia_smi(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parses `name, memory MiB, compute capability` lines from `nvidia-smi`.
+fn parse_nvidia_smi(csv: &str) -> Option<Gpu> {
+    let cards: Vec<(String, u64, String)> = csv
+        .lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+            let [name, mib, cap] = fields[..] else { return None };
+            Some((name.to_string(), mib.parse::<u64>().ok()? * 1024 * 1024, cap.replace('.', "")))
+        })
+        .collect();
+    let (name, _, _) = cards.first()?.clone();
+    let mut compute_caps: Vec<String> = cards.iter().map(|(_, _, cap)| cap.clone()).filter(|c| !c.is_empty()).collect();
+    compute_caps.sort();
+    compute_caps.dedup();
+    Some(Gpu {
+        name,
+        count: cards.len(),
+        vram_bytes: cards.iter().map(|(_, bytes, _)| bytes).sum(),
+        compute_caps,
+    })
+}
+
+/// Published memory bandwidth for NVIDIA cards, matched as a whole-word suffix so
+/// "RTX 4070" never matches "RTX 4070 Ti". Unlisted cards stay unknown.
+pub fn nvidia_bandwidth_gbps(name: &str) -> Option<f64> {
+    const TABLE: [(&str, f64); 31] = [
+        ("RTX 3060", 360.0),
+        ("RTX 3060 Ti", 448.0),
+        ("RTX 3070", 448.0),
+        ("RTX 3070 Ti", 608.0),
+        ("RTX 3080", 760.0),
+        ("RTX 3080 Ti", 912.0),
+        ("RTX 3090", 936.0),
+        ("RTX 3090 Ti", 1008.0),
+        ("RTX 4060", 272.0),
+        ("RTX 4060 Ti", 288.0),
+        ("RTX 4070", 504.0),
+        ("RTX 4070 SUPER", 504.0),
+        ("RTX 4070 Ti", 504.0),
+        ("RTX 4070 Ti SUPER", 672.0),
+        ("RTX 4080", 717.0),
+        ("RTX 4080 SUPER", 736.0),
+        ("RTX 4090", 1008.0),
+        ("RTX 5060", 448.0),
+        ("RTX 5060 Ti", 448.0),
+        ("RTX 5070", 672.0),
+        ("RTX 5070 Ti", 896.0),
+        ("RTX 5080", 960.0),
+        ("RTX 5090", 1792.0),
+        ("RTX A4000", 448.0),
+        ("RTX A5000", 768.0),
+        ("RTX A6000", 768.0),
+        ("RTX 6000 Ada Generation", 960.0),
+        ("A100-PCIE-40GB", 1555.0),
+        ("A100-SXM4-80GB", 2039.0),
+        ("H100 PCIe", 2000.0),
+        ("L40S", 864.0),
+    ];
+    let name = format!(" {}", name.trim()).to_lowercase();
+    TABLE
+        .iter()
+        .find(|(card, _)| name.ends_with(&format!(" {}", card.to_lowercase())))
+        .map(|(_, gbps)| *gbps)
+}
+
+/// Free memory on the NVIDIA GPU with the least free, or `None` without one.
+pub fn gpu_free_bytes() -> Option<u64> {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.free", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .min()
+        .map(|mib| mib * 1024 * 1024)
+}
+
 /// Free bytes on the volume holding `path` (or its nearest existing parent).
 pub fn free_disk_bytes(path: &Path) -> Option<u64> {
     let mut existing = path;
@@ -146,10 +287,35 @@ mod tests {
             ram_bytes: ram_gb * GB,
             apple_silicon,
             bandwidth_gbps: None,
+            gpu: None,
         };
         assert_eq!(device(24, true).model_budget_bytes(), (24.0 * 0.67 * GB as f64) as u64);
         assert_eq!(device(64, true).model_budget_bytes(), 48 * GB);
         assert_eq!(device(10, false).model_budget_bytes(), 6 * GB);
+    }
+
+    #[test]
+    fn detects_nvidia_cards_and_budgets_by_vram() {
+        let gpu = parse_nvidia_smi("NVIDIA GeForce RTX 3090, 24576, 8.6\n").unwrap();
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 3090");
+        assert_eq!(gpu.vram_bytes, 24576 * 1024 * 1024);
+        assert_eq!(gpu.compute_caps, ["86"]);
+        let device = Device { chip: "i9".into(), ram_bytes: 32 * GB, apple_silicon: false, bandwidth_gbps: None, gpu: None }
+            .with_gpu(Some(gpu));
+        assert_eq!(device.bandwidth_gbps, Some(936.0));
+        assert_eq!(device.model_budget_bytes(), (24576.0 * 1024.0 * 1024.0 * 0.9) as u64);
+
+        let pair = parse_nvidia_smi("NVIDIA GeForce RTX 4090, 24564, 8.9\nNVIDIA GeForce RTX 3090, 24576, 8.6").unwrap();
+        assert_eq!((pair.count, pair.compute_caps.len()), (2, 2));
+        assert_eq!(parse_nvidia_smi("No devices were found"), None);
+    }
+
+    #[test]
+    fn nvidia_bandwidth_has_no_prefix_collisions() {
+        assert_eq!(nvidia_bandwidth_gbps("NVIDIA GeForce RTX 4070"), Some(504.0));
+        assert_eq!(nvidia_bandwidth_gbps("NVIDIA GeForce RTX 4070 Ti SUPER"), Some(672.0));
+        assert_eq!(nvidia_bandwidth_gbps("NVIDIA GeForce RTX 3090 Ti"), Some(1008.0));
+        assert_eq!(nvidia_bandwidth_gbps("NVIDIA GeForce GTX 1080"), None);
     }
 
     #[test]

@@ -291,7 +291,7 @@ mod tests {
         compile_definitions(parse_definitions(tokens, "test.ff")?, &[])
     }
     fn context(words: Vec<UserWord>) -> Context {
-        Context { stack: vec![], provider: Provider::Codex, registers: Registers::in_memory(), memory: crate::registers::Memory::in_memory(), project: Project { root: std::env::temp_dir() }, server: None, printed: String::new(), store_label: "!".into(), user_words: words, local_frames: vec![], call_depth: 0 }
+        Context { stack: vec![], provider: Provider::Codex, registers: Registers::in_memory(), memory: crate::registers::Memory::in_memory(), project: Project { root: std::env::temp_dir() }, server: None, printed: String::new(), store_label: "!".into(), user_words: words, local_frames: vec![], call_depth: 0, sink: Box::new(crate::events::Recorder::default()), say_kind: crate::events::Kind::Run, web: None }
     }
 
     #[test] fn loads_forward_calls_and_named_input_copies() {

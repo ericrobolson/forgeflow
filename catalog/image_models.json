@@ -3,7 +3,11 @@
     "id": "z-image-turbo",
     "name": "Z-Image Turbo",
     "license": "apache-2.0",
-    "tags": ["fast", "photo", "text"],
+    "tags": [
+      "fast",
+      "photo",
+      "text"
+    ],
     "files": [
       {
         "flag": "--diffusion-model",
@@ -36,7 +40,11 @@
     "id": "chroma1-hd",
     "name": "Chroma1-HD",
     "license": "apache-2.0",
-    "tags": ["uncensored", "art", "photo"],
+    "tags": [
+      "uncensored",
+      "art",
+      "photo"
+    ],
     "files": [
       {
         "flag": "--diffusion-model",
@@ -64,6 +72,272 @@
     "cfg_scale": 4.0,
     "width": 1024,
     "height": 1024,
-    "extra_args": ["--sampling-method", "euler", "--model-args", "chroma_use_dit_mask=false"]
+    "extra_args": [
+      "--sampling-method",
+      "euler",
+      "--model-args",
+      "chroma_use_dit_mask=false"
+    ]
+  },
+  {
+    "id": "qwen-image-edit-2511",
+    "name": "Qwen Image Edit 2511 (4-step Lightning)",
+    "license": "apache-2.0",
+    "task": "edit",
+    "tags": [
+      "edit",
+      "photo",
+      "text",
+      "fast"
+    ],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
+        "path": "qwen-image-edit-2511-Q4_K_M.gguf",
+        "size_bytes": 12842830432,
+        "sha256": "07951f61941a81e236cbd4a9b6f250d49626b3ba518f260135bf2e01a87cf1c8"
+      },
+      {
+        "flag": "--llm",
+        "repo": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        "path": "Qwen2.5-VL-7B-Instruct-Q5_K_M.gguf",
+        "size_bytes": 5444830080,
+        "sha256": "793abbb5069da0ca9e11fbcb26352fda62391dace0ad13924db3d0dc57ee819c"
+      },
+      {
+        "flag": "--llm_vision",
+        "repo": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        "path": "mmproj-F16.gguf",
+        "size_bytes": 1354163040,
+        "sha256": "987dd0733033fb5dd9b124d1ca926ae865572e432384eee7618b2eec3e735e17"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/Qwen-Image",
+        "path": "split_files/vae/qwen_image_vae.safetensors",
+        "size_bytes": 253806246,
+        "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f"
+      },
+      {
+        "flag": "lora",
+        "repo": "lightx2v/Qwen-Image-Edit-2511-Lightning",
+        "path": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+        "size_bytes": 849608296,
+        "sha256": "22226e8d05d354bb356627d428809f5afd7819399b077238a2b70a82883a904f"
+      }
+    ],
+    "steps": 4,
+    "cfg_scale": 1.0,
+    "width": 1024,
+    "height": 1024,
+    "extra_args": [
+      "--sampling-method",
+      "euler",
+      "--flow-shift",
+      "3",
+      "--model-args",
+      "qwen_image_zero_cond_t=true",
+      "--offload-to-cpu"
+    ]
+  },
+  {
+    "id": "wan2.2-ti2v-5b",
+    "name": "Wan 2.2 TI2V 5B",
+    "license": "apache-2.0",
+    "task": "video",
+    "tags": [
+      "video",
+      "text-to-video",
+      "image-to-video"
+    ],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        "path": "Wan2.2-TI2V-5B-Q8_0.gguf",
+        "size_bytes": 5400179040,
+        "sha256": "57bece983817ab2f957546683bb670f13be7d99022d45674840cd999a050ea8f"
+      },
+      {
+        "flag": "--t5xxl",
+        "repo": "city96/umt5-xxl-encoder-gguf",
+        "path": "umt5-xxl-encoder-Q8_0.gguf",
+        "size_bytes": 6043068256,
+        "sha256": "2521d4de0bf9e1cc6549866463ceae85e4ec3239bc6063f7488810be39033bbc"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/Wan-2.2",
+        "path": "split_files/vae/wan2.2_vae.safetensors",
+        "size_bytes": 1409400960,
+        "sha256": "e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156"
+      }
+    ],
+    "steps": 20,
+    "cfg_scale": 5.0,
+    "width": 1280,
+    "height": 704,
+    "frames": 121,
+    "fps": 24,
+    "extra_args": [
+      "-M",
+      "vid_gen",
+      "--sampling-method",
+      "euler",
+      "--flow-shift",
+      "5",
+      "--offload-to-cpu",
+      "--mmap",
+      "--vae-tiling",
+      "-n",
+      "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    ]
+  },
+  {
+    "id": "wan2.1-vace-1.3b",
+    "name": "Wan 2.1 VACE 1.3B",
+    "license": "apache-2.0",
+    "task": "video",
+    "tags": [
+      "video",
+      "vace",
+      "fast"
+    ],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "Comfy-Org/Wan-2.1",
+        "path": "split_files/diffusion_models/wan2.1_vace_1.3B_fp16.safetensors",
+        "size_bytes": 4309519800,
+        "sha256": "640ccc0577e6a5d4bb15cd91b11b699ef914fc55f126c5a1c544e152130784f2"
+      },
+      {
+        "flag": "--t5xxl",
+        "repo": "city96/umt5-xxl-encoder-gguf",
+        "path": "umt5-xxl-encoder-Q8_0.gguf",
+        "size_bytes": 6043068256,
+        "sha256": "2521d4de0bf9e1cc6549866463ceae85e4ec3239bc6063f7488810be39033bbc"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/Wan-2.1",
+        "path": "split_files/vae/wan_2.1_vae.safetensors",
+        "size_bytes": 253815318,
+        "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b"
+      }
+    ],
+    "steps": 20,
+    "cfg_scale": 6.0,
+    "width": 832,
+    "height": 480,
+    "frames": 81,
+    "fps": 16,
+    "extra_args": [
+      "-M",
+      "vid_gen",
+      "--sampling-method",
+      "euler",
+      "--flow-shift",
+      "3",
+      "--offload-to-cpu",
+      "--mmap",
+      "-n",
+      "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    ]
+  },
+  {
+    "id": "wan2.2-vace-fun-nsfw",
+    "name": "Wan 2.2 VACE-Fun A14B NSFW merge",
+    "license": "mit",
+    "task": "video",
+    "tags": [
+      "video",
+      "vace",
+      "uncensored",
+      "nsfw"
+    ],
+    "files": [
+      {
+        "flag": "--diffusion-model",
+        "repo": "PineAmbassador/Wan2.2-VACE-Fun-A14B-NSFW_Merge",
+        "path": "low_noise/Wan2.2-VACE-Fun-A14B-NSFW_Merge-Q6_K_low.gguf",
+        "size_bytes": 14506139552,
+        "sha256": "4ea73ebfa4080974dd2bf22e8dd38018fdff1becb028694105f9339f538a500d",
+        "reshape": {
+          "patch_embedding.weight": [
+            2,
+            2,
+            1,
+            81920
+          ],
+          "vace_patch_embedding.weight": [
+            2,
+            2,
+            1,
+            491520
+          ]
+        }
+      },
+      {
+        "flag": "--high-noise-diffusion-model",
+        "repo": "PineAmbassador/Wan2.2-VACE-Fun-A14B-NSFW_Merge",
+        "path": "high_noise/Wan2.2-VACE-Fun-A14B-NSFW_Merge-Q4_K_M-high.gguf",
+        "size_bytes": 11623006112,
+        "sha256": "2c930e23adeb00a2fdefb3573cb41c786fe1b256950a3199a0c2fb2ec4fdf49a",
+        "reshape": {
+          "patch_embedding.weight": [
+            2,
+            2,
+            1,
+            81920
+          ],
+          "vace_patch_embedding.weight": [
+            2,
+            2,
+            1,
+            491520
+          ]
+        }
+      },
+      {
+        "flag": "--t5xxl",
+        "repo": "city96/umt5-xxl-encoder-gguf",
+        "path": "umt5-xxl-encoder-Q8_0.gguf",
+        "size_bytes": 6043068256,
+        "sha256": "2521d4de0bf9e1cc6549866463ceae85e4ec3239bc6063f7488810be39033bbc"
+      },
+      {
+        "flag": "--vae",
+        "repo": "Comfy-Org/Wan-2.1",
+        "path": "split_files/vae/wan_2.1_vae.safetensors",
+        "size_bytes": 253815318,
+        "sha256": "2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b"
+      }
+    ],
+    "steps": 6,
+    "cfg_scale": 1.0,
+    "width": 832,
+    "height": 480,
+    "frames": 81,
+    "fps": 16,
+    "extra_args": [
+      "-M",
+      "vid_gen",
+      "--sampling-method",
+      "euler",
+      "--high-noise-sampling-method",
+      "euler",
+      "--high-noise-steps",
+      "6",
+      "--high-noise-cfg-scale",
+      "1",
+      "--flow-shift",
+      "3",
+      "--offload-to-cpu",
+      "--mmap",
+      "-n",
+      "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+    ]
   }
 ]

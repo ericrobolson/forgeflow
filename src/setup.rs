@@ -135,10 +135,8 @@ pub fn run(context: &mut Context) -> Result<bool, String> {
     let catalog = models::catalog();
     let free = device::free_disk_bytes(&models::models_dir());
     println!(
-        "\nNo model selected yet. Let's pick a local model to chat with.\n{} · {} RAM · ~{} model budget · {} free in {}\n",
-        device.chip,
-        models::gb(device.ram_bytes),
-        models::gb(device.model_budget_bytes()),
+        "\nNo model selected yet. Let's pick a local model to chat with.\n{} · {} free in {}\n",
+        device.summary(),
         free.map(models::gb).unwrap_or_else(|| "?".into()),
         models::models_dir().display(),
     );
@@ -225,6 +223,7 @@ mod tests {
             ram_bytes: 24 * 1024 * 1024 * 1024,
             apple_silicon: true,
             bandwidth_gbps: Some(273.0),
+            gpu: None,
         }
     }
 

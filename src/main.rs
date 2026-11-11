@@ -55,10 +55,18 @@ fn read_source(path: &Path) -> io::Result<Source> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // A watcher started to stop a child process if this one dies; see `reaper`.
+    if let Some(pid) = std::env::args().nth(2).filter(|_| std::env::args().nth(1).as_deref() == Some(forgeflow::reaper::REAP_ARG)) {
+        forgeflow::reaper::run_watcher(&pid);
+    }
+    forgeflow::server::stop_children_on_exit();
     let working_dir = std::env::current_dir()?;
     if !Project::exists() && !util::confirmation("Project not found. Create one?") {
         println!("Not creating project.");
         return Ok(());
+    }
+    for warning in forgeflow::toolchain::startup_warnings() {
+        eprintln!("warning: {warning}");
     }
     let project = Project::initialize(&working_dir)?;
     let mut context = Context::new(project, Provider::Claude)?;
@@ -81,6 +89,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
         ["image"] => run_words(context, vec![Ops::ImageModels]),
         ["image", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseImage]),
+        ["install"] => install(),
+        ["serve"] => {
+            let port = forgeflow::config::Config::load(&context.project.folder())?.web_port;
+            serve(context, port)
+        }
+        ["serve", port] => serve(context, port.parse().map_err(|_| format!("`{port}` is not a port number"))?),
         ["edit", path] => Ok(forgeflow::editor::run(&mut context, path)?),
         [path] if !path.starts_with('-') && *path != "help" => run_file(Path::new(path), context),
         _ => {
@@ -97,8 +111,34 @@ const USAGE: &str = "Usage:
   forgeflow use <id>     select the model
   forgeflow image        show image generation settings and local image models
   forgeflow image <id>   generate images locally with <id>, or `openrouter`
+  forgeflow install       build llama-server and sd-cli for this machine's GPU
+  forgeflow serve [port]  chat in a browser; prints a QR code for phones on the network
+                         (port `web_port`, 8090 by default; in chat, `/serve` or `\"start\" serve`)
   forgeflow edit <path>  edit a file beside its summary
   forgeflow <file.ff>    run a ForgeFlow program";
+
+fn serve(mut context: Context, port: u16) -> Result<(), Box<dyn Error>> {
+    context.user_words = forgeflow::user_words::load(&context.project)?;
+    Ok(forgeflow::web::serve(context, port)?)
+}
+
+fn install() -> Result<(), Box<dyn Error>> {
+    use forgeflow::toolchain::{self, Status, Tool};
+    let device = forgeflow::device::Device::probe();
+    println!("{}", device.summary());
+    for tool in Tool::ALL {
+        let name = tool.binary_name();
+        match toolchain::install(tool)? {
+            Status::External(path) => println!("{name}: using {} (not managed by ForgeFlow)", path.display()),
+            Status::Current(path) => {
+                let backend = toolchain::built_info(tool).map(|i| i.backend).unwrap_or_default();
+                println!("{name}: {} at {} ({backend})", path.display(), tool.pinned());
+            }
+            status => println!("{name}: {status:?}"),
+        }
+    }
+    Ok(())
+}
 
 fn run_words(mut context: Context, steps: Vec<Ops>) -> Result<(), Box<dyn Error>> {
     workflow::run_steps(&mut context, &steps)?;

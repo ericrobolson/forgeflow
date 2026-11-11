@@ -22,11 +22,16 @@ const HISTORY_BLOCK: usize = 8;
 /// How much of a turn's output the next turn sees.
 const OUTPUT_EXCERPT_CHARS: usize = 600;
 
-/// The words a message may translate to. `answer` and `make-image` have external effects.
+/// The words a message may translate to. `answer`, `make-image` and `edit-image` have
+/// external effects.
 pub fn vocabulary() -> Vec<Ops> {
     vec![
         Ops::ReadFile,
         Ops::MakeImage,
+        Ops::EditImage,
+        Ops::DraftVideo,
+        Ops::FinishVideo,
+        Ops::Serve,
         Ops::ListDirectory,
         Ops::ListFiles,
         Ops::Summarize,
@@ -298,6 +303,7 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
          Interpret the current request first; previous output must not change what operation the user asked for. \
          \"print directory\" or \"list the current directory\" means \".\" list_directory print.\n\
          If the user asks to generate an image and gives an output filename, call `make-image` exactly once. Do not answer with drawing code, instructions, or `print` strings. Its stack order is path, prompt, `make-image`; it requests a square image at the selected model's default resolution, so do not promise requested pixel dimensions.\n\
+         If the user asks to change, edit, fix or add something to an existing image file, call `edit-image` exactly once with that file and the requested change as the instruction, phrased as a direct edit (\"add rain\", not \"can you add rain\"). Its stack order is image path, instruction, `edit-image`; it saves the result itself, so never pass an output path. Several images go in a list only when the user names more than one.\n\
          Only when the user is clearly asking for instructions on how to do something, use `answer` to give a concise explanation with a copyable, valid example. Recognize that intent across natural phrasings; do not depend on exact wording. For other requests, translate the requested action directly without adding an unsolicited tutorial. Use the examples below as patterns; don't turn a how-to question into a printout of a word's vocabulary description. Distinguish named cells (`variable name` declared in `_forgeflow/user_words.ff.txt`, then `value name !` and `name @`) from registers (`value R0 !` and `R0 @`). `!` stores the value into the address/register on its right.\n\
          To reply to the user, print a string or use answer.\n\
          \n\
@@ -346,7 +352,7 @@ pub fn suggest_messages_with(goal: &str, user_words: &[UserWord]) -> Vec<Json> {
 
 /// Example turns placed before the conversation; small models imitate real turns far
 /// better than examples described in the system prompt.
-pub const EXAMPLES: [(&str, &str); 19] = [
+pub const EXAMPLES: [(&str, &str); 22] = [
     ("hi!", r#""Hi! What can I do for you?" print"#),
     ("what can you do?", "help"),
     ("what's in the src folder?", r#""src" list_directory print"#),
@@ -386,6 +392,12 @@ pub const EXAMPLES: [(&str, &str); 19] = [
     (
         "make an image of a banana and save to .tmp/ban.png",
         r#"".tmp/ban.png" "A banana" make-image"#,
+    ),
+    ("start the web server so my phone can connect", r#""start" serve"#),
+    ("make a quick video of a gladiator charging across the arena, save it as clips/charge.mp4", r#""clips/charge.mp4" "A gladiator charges across the arena" draft-video"#),
+    (
+        "in shots/arena.png, make it dusk and add blood spatter on the gladiator's shield",
+        r#""shots/arena.png" "Make it dusk and add blood spatter on the gladiator's shield" edit-image"#,
     ),
 ];
 
@@ -712,7 +724,7 @@ fn valid_image_program(steps: &[Ops]) -> bool {
     let mut count = 0;
     for step in steps {
         match step {
-            Ops::MakeImage => count += 1,
+            Ops::MakeImage | Ops::EditImage => count += 1,
             Ops::StringLiteral(_) => {}
             _ => return false,
         }

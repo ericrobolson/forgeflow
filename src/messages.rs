@@ -5,7 +5,7 @@ use std::{
 
 use crossterm::{
     event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        self, Event as KeyInput, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
         PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
@@ -24,20 +24,24 @@ use crate::{
     parser::{self, Source},
     translate::{self, Exchange},
     words,
+    events::{Event, Kind},
+    web::SharedConversation,
     workflow::{self, Context},
 };
 
 const CONTINUATION_INDENT: &str = "  ";
 
 /// A turn-by-turn interface: ordinary messages go to chat; `;` prefixed messages run as code.
+/// Output goes to the context's event sink, so the terminal and web UI share it.
 pub struct Conversation {
-    context: Context,
+    pub context: Context,
     backend: OpenAiCompatible,
     history: Vec<Exchange>,
     context_limit: u64,
-    styled: bool,
     /// Text to place on the next input line, set by suggest mode.
     prefill: Option<String>,
+    /// Whether full-screen commands such as `/edit` can take over the terminal.
+    pub interactive: bool,
 }
 
 /// Start a conversation with the selected model.
@@ -45,30 +49,21 @@ pub struct Conversation {
 /// Uses Crossterm key events for a real terminal and line input when stdin is
 /// piped or redirected. Shift+Enter inserts a newline where the terminal
 /// reports that key combination; a trailing backslash is a portable fallback.
-pub fn run(mut context: Context) -> Result<(), Box<dyn Error>> {
+pub fn run(context: Context) -> Result<(), Box<dyn Error>> {
     let terminal = io::stdin().is_terminal();
     // Print the banner before the server starts, so early keystrokes land after it.
     if terminal {
         println!(
-            "ForgeFlow. Enter sends; Left/Right move the cursor, Option+Left/Right move by word; Up/Down browse history; prefix a program with ; to compile and run it. Shift+Enter adds a line where supported; Ctrl+C exits."
+            "ForgeFlow. Enter sends; Left/Right move the cursor, Option+Left/Right move by word; Up/Down browse history; Esc clears the line; prefix a program with ; to compile and run it. Shift+Enter adds a line where supported; Ctrl+C exits."
         );
     } else {
         println!("ForgeFlow. Send a message; prefix a program with ; to compile and run it; Ctrl+D to exit.");
     }
-    // Start the model server now so the first message does not wait for it.
-    let (backend, config) = chat::connect(&mut context)?;
-    let mut conversation = Conversation {
-        context,
-        backend,
-        history: vec![],
-        context_limit: config.ctx,
-        styled: io::stdout().is_terminal(),
-        prefill: None,
-    };
+    let conversation = crate::web::share(context, terminal, false)?;
     if terminal {
-        run_terminal(&mut conversation)
+        run_terminal(&conversation)
     } else {
-        run_stream(&mut conversation)
+        run_stream(&conversation)
     }
 }
 
@@ -76,7 +71,7 @@ fn report_submission(
     buffer: &mut String,
     _submission: usize,
     terminal_mode: bool,
-    conversation: &mut Conversation,
+    conversation: &SharedConversation,
 ) -> Result<(), Box<dyn Error>> {
     let message = std::mem::take(buffer);
     // Crossterm raw mode disables the terminal's normal LF-to-CRLF output
@@ -85,7 +80,8 @@ fn report_submission(
         disable_raw_mode()?;
     }
     if !message.trim().is_empty() {
-        conversation.turn(message.trim());
+        // Held only for the turn, so the web UI can take turns while this one waits for input.
+        conversation.lock().expect("conversation lock").turn(message.trim());
     }
     if terminal_mode {
         enable_raw_mode()?;
@@ -93,34 +89,31 @@ fn report_submission(
     Ok(())
 }
 
-/// Output colours by kind of turn: chat, `;` program results, `?` suggestions, `/` commands.
-const CHAT_COLOR: &str = "\x1b[36m";
-const RUN_COLOR: &str = "\x1b[32m";
-const SUGGEST_COLOR: &str = "\x1b[33m";
-const STACK_COLOR: &str = "\x1b[34m";
-const COMMAND_COLOR: &str = "\x1b[35m";
-
 impl Conversation {
-    /// Starts coloured output on a terminal; pair with `end_color`.
-    fn begin_color(&self, color: &str) {
-        if self.styled {
-            print!("{color}");
-        }
+    /// Connects to the selected model, starting its server now so the first message does
+    /// not wait for it.
+    pub fn new(mut context: Context, interactive: bool) -> Result<Self, String> {
+        let (backend, config) = chat::connect(&mut context)?;
+        Ok(Self {
+            context,
+            backend,
+            history: vec![],
+            context_limit: config.ctx,
+            prefill: None,
+            interactive,
+        })
     }
 
-    fn end_color(&self) {
-        if self.styled {
-            print!("\x1b[0m");
-            io::stdout().flush().ok();
-        }
+    fn line(&mut self, kind: Kind, text: impl Into<String>) {
+        self.context.emit(Event::Line(kind, text.into()));
     }
 
-    fn dim(&self, text: &str) -> String {
-        if self.styled {
-            format!("\x1b[2m{text}\x1b[0m")
-        } else {
-            text.to_string()
-        }
+    fn note(&mut self, text: impl Into<String>) {
+        self.line(Kind::Note, text);
+    }
+
+    fn error(&mut self, text: impl std::fmt::Display) {
+        self.line(Kind::Error, text.to_string());
     }
 
     /// Chat commands such as `/model`, handled directly and never sent to the model.
@@ -128,17 +121,19 @@ impl Conversation {
         let words: Vec<&str> = message.split_whitespace().collect();
         let result = match words.as_slice() {
             // The rest of the line is the path, so paths may contain spaces.
+            ["/edit", ..] if !self.interactive => Err("/edit needs the terminal; it is not available here".into()),
             ["/edit", _, ..] => crate::editor::run(&mut self.context, message.trim_start_matches("/edit")),
             ["/edit"] => Err("usage: /edit <path>".into()),
             ["/clear"] => {
                 self.history.clear();
                 self.context.stack.clear();
-                println!("Conversation and stack cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
+                let text = format!("Conversation and stack cleared. Estimated context remaining: ~{} tokens.", self.context_limit);
+                self.line(Kind::Command, text);
                 Ok(())
             }
             ["/reload"] => match crate::user_words::reload(&mut self.context) {
                 Ok(count) => {
-                    println!("Reloaded {count} user-defined word(s).");
+                    self.line(Kind::Command, format!("Reloaded {count} user-defined word(s)."));
                     Ok(())
                 }
                 Err(error) => Err(format!("reload failed; keeping current words: {error}")),
@@ -148,11 +143,11 @@ impl Conversation {
                     .ok()
                     .and_then(|c| c.model)
                     .unwrap_or_else(|| "(none)".into());
-                println!("Current model: {current}\nInstalled:");
+                self.line(Kind::Command, format!("Current model: {current}\nInstalled:"));
                 for line in models::installed_summary() {
-                    println!("  {line}");
+                    self.line(Kind::Command, format!("  {line}"));
                 }
-                println!("Switch with /model <id>; see every model with /models.");
+                self.line(Kind::Command, "Switch with /model <id>; see every model with /models.");
                 Ok(())
             }
             ["/model", id] => self.switch_model(id),
@@ -160,12 +155,14 @@ impl Conversation {
             ["/pull", id] => models::pull(id, &mut io::stderr()).map(|_| ()),
             ["/image"] => workflow::run_steps(&mut self.context, &[Ops::ImageModels]),
             ["/image", id] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral(id.to_string()), Ops::UseImage]),
+            ["/serve"] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral("start".into()), Ops::Serve]),
+            ["/serve", action] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral(action.to_string()), Ops::Serve]),
             _ => Err(format!(
-                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /image, /image <id>, /pull <id>, or /help"
+                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /image, /image <id>, /pull <id>, /serve, /serve stop, or /help"
             )),
         };
         if let Err(error) = result {
-            eprintln!("error: {error}");
+            self.error(error);
         }
     }
 
@@ -181,7 +178,7 @@ impl Conversation {
         match switched {
             Ok(backend) => {
                 self.backend = backend;
-                println!("{}", self.dim(&format!("switched to {id} in {} ms", started.elapsed().as_millis())));
+                self.note(format!("switched to {id} in {} ms", started.elapsed().as_millis()));
                 Ok(())
             }
             Err(error) => {
@@ -196,11 +193,16 @@ impl Conversation {
     }
 
     /// Translates one message, runs the program, and records the turn.
-    fn turn(&mut self, message: &str) {
+    pub fn turn(&mut self, message: &str) {
+        // Reconnect if the server went away, such as a shared one its owner restarted.
+        match chat::connect(&mut self.context) {
+            Ok((backend, _)) => self.backend = backend,
+            Err(error) => self.error(format!("could not reach the model: {error}")),
+        }
         if message.starts_with('/') && message != "/help" {
-            self.begin_color(COMMAND_COLOR);
+            self.context.say_kind = Kind::Command;
             self.command(message);
-            self.end_color();
+            self.context.say_kind = Kind::Run;
             return;
         }
         if let Some(request) = message.trim_start().strip_prefix(';') {
@@ -230,30 +232,35 @@ impl Conversation {
                 },
             );
             if let Err(error) = result {
-                return eprintln!("error: {error}");
+                return self.error(error);
             }
             let mut errors = Vec::new();
+            // Suggestions are steps in order, so later lines may call words defined earlier.
+            let mut words = self.context.user_words.clone();
             for line in generated.lines().map(|line| line.trim().trim_matches('`').trim()).filter(|line| !line.is_empty()) {
                 let Some(program) = line.strip_prefix(';').map(str::trim) else {
                     notes.push(line.to_string());
                     continue;
                 };
                 if program.starts_with(':') {
-                    match crate::user_words::compile_one(&self.context.user_words, "<suggested definition>", program) {
-                        Ok(_) => valid.push(format!("; {program}")),
+                    match crate::user_words::compile_one(&words, "<suggested definition>", program) {
+                        Ok(defined) => {
+                            words = defined;
+                            valid.push(format!("; {program}"));
+                        }
                         Err(error) => errors.push(format!("`; {program}`: {error}")),
                     }
                     continue;
                 }
                 let filled = |r: usize| self.context.registers.is_filled(r);
-                match translate::compile_with(program, &filled, &self.context.user_words) {
+                match translate::compile_with(program, &filled, &words) {
                     Ok(_) => valid.push(format!("; {program}")),
                     Err(error) => errors.push(format!("`; {program}`: {error}")),
                 }
             }
             if !valid.is_empty() || !notes.is_empty() || errors.is_empty() || attempt == 2 {
                 for error in errors {
-                    println!("{}", self.dim(&format!("rejected: {error}")));
+                    self.note(format!("rejected: {error}"));
                 }
                 break;
             }
@@ -269,17 +276,24 @@ impl Conversation {
             )}));
         }
         valid.dedup();
-        self.begin_color(SUGGEST_COLOR);
-        for command in &valid {
-            println!("{command}");
+        // The prompt takes one line: the steps joined when they run as one program, or else
+        // the first suggestion.
+        let filled = |r: usize| self.context.registers.is_filled(r);
+        let joined = join_steps(&valid, &self.context.user_words, &filled);
+        match &joined {
+            Some(line) => self.line(Kind::Suggest, line.clone()),
+            None => {
+                for command in &valid {
+                    self.line(Kind::Suggest, command.clone());
+                }
+            }
         }
-        self.end_color();
-        self.prefill = valid.first().cloned();
+        self.prefill = joined.or_else(|| valid.first().cloned());
         for note in &notes {
-            println!("{note}");
+            self.line(Kind::Chat, note.clone());
         }
         if valid.is_empty() && notes.is_empty() {
-            println!("{}", self.dim("no valid command suggestions"));
+            self.note("no valid command suggestions");
         }
     }
 
@@ -297,7 +311,7 @@ impl Conversation {
         messages.push(json!({"role": "user", "content": message}));
 
         let mut output = String::new();
-        self.begin_color(CHAT_COLOR);
+        let sink = &mut self.context.sink;
         let turn = self.backend.step(
             &messages,
             &[],
@@ -307,21 +321,19 @@ impl Conversation {
             },
             &mut |delta| {
                 if let Delta::Text(text) = delta {
-                    print!("{text}");
-                    io::stdout().flush().ok();
                     output.push_str(&text);
+                    sink.emit(Event::Text(Kind::Chat, text));
                 }
             },
         );
-        self.end_color();
         match turn {
             Ok(turn) => {
                 let assistant_chars = turn.content.len();
                 if !output.is_empty() {
-                    println!();
+                    self.context.emit(Event::Text(Kind::Chat, "\n".into()));
                 }
                 if !turn.tool_calls.is_empty() {
-                    eprintln!("error: chat does not run tools; prefix ForgeFlow code with `;` to execute it");
+                    self.error("chat does not run tools; prefix ForgeFlow code with `;` to execute it");
                 }
                 self.history.push(Exchange {
                     message: message.to_string(),
@@ -332,16 +344,21 @@ impl Conversation {
                     + assistant_chars;
                 let estimated_used = (prompt_chars as u64).div_ceil(4);
                 let remaining = self.context_limit.saturating_sub(estimated_used);
-                println!("{}", self.dim(&format!("~{remaining} context tokens remaining (estimated)")));
+                self.note(format!("~{remaining} context tokens remaining (estimated)"));
             }
-            Err(error) => eprintln!("error: {error}"),
+            Err(error) => self.error(error),
         }
     }
 
     /// Translates a semicolon-prefixed request to a checked ForgeFlow program and runs it.
     fn run_program_request(&mut self, request: &str) {
         if request.trim_start().starts_with(':') {
-            return self.save_definition(request.trim());
+            // A definition may be followed by code that uses it, on the same line.
+            let (definition, rest) = split_definition(request.trim());
+            if self.save_definition(definition) && !rest.is_empty() {
+                self.run_program_request(rest);
+            }
+            return;
         }
         if is_definition_request(request) {
             return self.initialize_word(request);
@@ -349,7 +366,7 @@ impl Conversation {
         let started = Instant::now();
         let (program, steps, attempts) = match compile_direct_program(request, &self.context.user_words, self.context.stack_types()) {
             Ok(Some(steps)) => (request.trim().to_string(), steps, 0),
-            Err(error) => return eprintln!("error: {error}"),
+            Err(error) => return self.error(error),
             Ok(None) => {
                 let translated = match translate::translate_on_stack(
                     &self.backend,
@@ -360,33 +377,28 @@ impl Conversation {
                     &self.context.stack,
                 ) {
                     Ok(translated) => translated,
-                    Err(error) => return eprintln!("error: {error}"),
+                    Err(error) => return self.error(error),
                 };
                 (translated.program, translated.steps, translated.attempts)
             }
         };
         let translated_in = started.elapsed();
-        println!("{}", self.dim(&format!("→ {program}")));
+        self.note(format!("→ {program}"));
 
         let running = Instant::now();
         self.context.take_printed();
         let stack_before = self.context.stack.clone();
         self.context.store_label = program.clone();
-        self.begin_color(RUN_COLOR);
         if let Err(error) = workflow::run_steps(&mut self.context, &steps) {
             self.context.stack = stack_before;
-            self.end_color();
-            eprintln!("error: {error}");
+            self.error(&error);
             self.context.printed.push_str(&format!("error: {error}\n"));
-            self.begin_color(RUN_COLOR);
         }
-        self.end_color();
         if !self.context.stack.is_empty() {
-            self.begin_color(STACK_COLOR);
-            println!("stack: {}", translate::stack_summary(&self.context.stack));
-            self.end_color();
+            let stack = format!("stack: {}", translate::stack_summary(&self.context.stack));
+            self.line(Kind::Stack, stack);
         }
-        println!("{}", self.dim(&timing(translated_in, running.elapsed(), attempts)));
+        self.note(timing(translated_in, running.elapsed(), attempts));
         self.history.push(Exchange {
             message: format!(";{}", request.trim()),
             program,
@@ -395,16 +407,21 @@ impl Conversation {
     }
 
     /// Checks a written `: name ( ... ) body ;` definition and saves it to the word file.
-    fn save_definition(&mut self, definition: &str) {
+    /// Returns whether it was saved.
+    fn save_definition(&mut self, definition: &str) -> bool {
         match crate::user_words::compile_one(&self.context.user_words, "<definition>", definition)
             .and_then(|_| crate::user_words::add_definition(&self.context.project, definition))
         {
             Ok(words) => {
                 let name = definition.split_whitespace().nth(1).unwrap_or("word").to_string();
                 self.context.user_words = words;
-                println!("Defined `{name}`. Call it in a program, for example `; \"x\" {name}`.");
+                self.line(Kind::Run, format!("Defined `{name}`. Call it in a program, for example `; \"x\" {name}`."));
+                true
             }
-            Err(error) => eprintln!("error: {error}"),
+            Err(error) => {
+                self.error(error);
+                false
+            }
         }
     }
 
@@ -425,15 +442,15 @@ impl Conversation {
                 &StepOptions { temperature: Some(0.0), max_tokens: Some(400), no_thinking: true, ..StepOptions::default() },
                 &mut |delta| if let Delta::Text(text) = delta { generated.push_str(&text); },
             );
-            if let Err(error) = response { return eprintln!("error: could not initialize word: {error}"); }
+            if let Err(error) = response { return self.error(format!("could not initialize word: {error}")); }
             let definition = unwrap_definition(&generated);
             match crate::user_words::compile_one(&self.context.user_words, "<generated definition>", definition) {
                 Ok(_) => match crate::user_words::add_definition(&self.context.project, definition) {
                     Ok(words) => {
                         let name = definition.split_whitespace().nth(1).unwrap_or("word").to_string();
                         self.context.user_words = words;
-                        println!("Defined `{name}`. Call it in a program, for example `; 3 {name}`.");
-                        println!("{}", self.dim(&format!("→ {}", definition.trim())));
+                        self.line(Kind::Run, format!("Defined `{name}`. Call it in a program, for example `; 3 {name}`."));
+                        self.note(format!("→ {}", definition.trim()));
                         self.history.push(Exchange { message: format!(";{}", request.trim()), program: definition.trim().to_string(), output: format!("Defined `{name}`.") });
                         return;
                     }
@@ -446,8 +463,62 @@ impl Conversation {
                 messages.push(json!({"role":"user", "content":format!("That definition failed validation: {last_error}. Return one corrected complete ForgeFlow definition only. Follow the exact syntax and square example from the system instructions.")}));
             }
         }
-        eprintln!("error: could not initialize word after 3 attempts: {last_error}");
+        self.error(format!("could not initialize word after 3 attempts: {last_error}"));
     }
+}
+
+/// Splits `: name ( ... ) body ; more code` after the definition's closing `;`: the first
+/// `;` standing alone as a word outside a string.
+fn split_definition(text: &str) -> (&str, &str) {
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut previous = ' ';
+    for (at, c) in text.char_indices() {
+        if in_string {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == ';' && previous.is_whitespace() {
+            let end = at + 1;
+            if text[end..].chars().next().is_none_or(char::is_whitespace) {
+                return (&text[..end], text[end..].trim());
+            }
+        }
+        previous = c;
+    }
+    (text, "")
+}
+
+/// Suggested steps (`; ...` lines, definitions first) as one `; ...` line, when there are
+/// several and together they compile as one program.
+fn join_steps(steps: &[String], user_words: &[crate::user_words::UserWord], filled: &dyn Fn(usize) -> bool) -> Option<String> {
+    if steps.len() < 2 {
+        return None;
+    }
+    let mut words = user_words.to_vec();
+    let mut code: Vec<&str> = vec![];
+    for step in steps.iter().map(|s| s.trim_start_matches(';').trim()) {
+        if step.starts_with(':') {
+            // A definition after code would run before it on one line, changing the order.
+            if !code.is_empty() {
+                return None;
+            }
+            words = crate::user_words::compile_one(&words, "<suggested definition>", step).ok()?;
+        } else {
+            code.push(step);
+        }
+    }
+    let program = code.join(" ");
+    if !program.is_empty() {
+        translate::compile_with(&program, filled, &words).ok()?;
+    }
+    let all: Vec<&str> = steps.iter().map(|s| s.trim_start_matches(';').trim()).collect();
+    Some(format!("; {}", all.join(" ")))
 }
 
 fn is_definition_request(request: &str) -> bool {
@@ -513,6 +584,33 @@ fn prompt(buffer_is_empty: bool) -> &'static str {
 #[cfg(test)]
 mod definition_request_tests {
     use super::*;
+
+    #[test]
+    fn splits_a_definition_from_the_code_after_it() {
+        assert_eq!(
+            split_definition(": double ( n Int -- result Int ) dup + ; 4 double print"),
+            (": double ( n Int -- result Int ) dup + ;", "4 double print")
+        );
+        assert_eq!(
+            split_definition(r#": say ( -- ) "a ; b \" ;" print ;"#),
+            (r#": say ( -- ) "a ; b \" ;" print ;"#, "")
+        );
+    }
+
+    #[test]
+    fn joins_suggested_steps_into_one_line() {
+        let none = |_: usize| false;
+        let steps = ["; : double ( n Int -- result Int ) dup + ;".to_string(), "; 4 double print".to_string()];
+        assert_eq!(
+            join_steps(&steps, &[], &none).as_deref(),
+            Some("; : double ( n Int -- result Int ) dup + ; 4 double print")
+        );
+        let program = [r#"; "a" R4 !"#.to_string(), "; R4 @ print".to_string()];
+        assert_eq!(join_steps(&program, &[], &none).as_deref(), Some(r#"; "a" R4 ! R4 @ print"#));
+        assert_eq!(join_steps(&steps[..1], &[], &none), None);
+        // Steps that do not run together keep separate lines.
+        assert_eq!(join_steps(&["; 4 nosuchword".to_string(), "; 1 print".to_string()], &[], &none), None);
+    }
 
     #[test]
     fn recognizes_natural_definition_requests_case_insensitively() {
@@ -600,18 +698,59 @@ fn move_right_word(line: &str, cursor: usize) -> usize {
     position
 }
 
-fn redraw_input(stdout: &mut impl Write, buffer_is_empty: bool, line: &str, cursor: usize) -> io::Result<()> {
-    let prompt = prompt(buffer_is_empty);
-    print!("\r\x1b[2K{prompt}{line}");
-    let end = prompt.chars().count() + line.chars().count();
-    let position = prompt.chars().count() + cursor;
-    if end > position {
-        print!("\x1b[{}D", end - position);
+/// Where the input being edited sits on screen, in rows below its first row, so a line
+/// longer than the terminal is wide can be redrawn in place.
+#[derive(Default)]
+struct InputRows {
+    cursor: usize,
+    end: usize,
+}
+
+impl InputRows {
+    /// Moves below the input to a fresh line, as when it is submitted.
+    fn leave(&mut self) {
+        if self.end > self.cursor {
+            print!("\x1b[{}B", self.end - self.cursor);
+        }
+        print!("\r\n");
+        *self = Self::default();
     }
+}
+
+/// For `columns` characters of prompt and line in a terminal `width` wide, with the cursor
+/// after `position` of them: the row the text ends on, and the cursor's row and column.
+/// A line that exactly fills its last row ends at the start of the next, where the cursor
+/// is placed so the terminal's pending wrap never leaves it ambiguous.
+fn input_layout(width: usize, columns: usize, position: usize) -> (usize, usize, usize) {
+    let width = width.max(1);
+    (columns / width, position / width, position % width)
+}
+
+fn redraw_input(stdout: &mut impl Write, rows: &mut InputRows, buffer_is_empty: bool, line: &str, cursor: usize) -> io::Result<()> {
+    let prompt = prompt(buffer_is_empty);
+    let width = crossterm::terminal::size().map_or(80, |(columns, _)| columns as usize);
+    // Back to the input's first row, then clear everything below before drawing it again.
+    if rows.cursor > 0 {
+        print!("\x1b[{}A", rows.cursor);
+    }
+    print!("\r\x1b[J{prompt}{line}");
+    let columns = prompt.chars().count() + line.chars().count();
+    let (end, row, column) = input_layout(width, columns, prompt.chars().count() + cursor);
+    if columns > 0 && columns % width.max(1) == 0 {
+        print!("\r\n");
+    }
+    if end > row {
+        print!("\x1b[{}A", end - row);
+    }
+    print!("\r");
+    if column > 0 {
+        print!("\x1b[{column}C");
+    }
+    *rows = InputRows { cursor: row, end };
     stdout.flush()
 }
 
-fn run_stream(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
+fn run_stream(conversation: &SharedConversation) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut buffer = String::new();
     let mut line = String::new();
@@ -671,7 +810,7 @@ impl Drop for KeyboardEnhancement {
     }
 }
 
-fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
+fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>> {
     let _raw_mode = RawMode::enter()?;
     // Request unambiguous reports for modified keys, including Shift+Enter.
     // Other terminals ignore the request and retain the trailing-backslash
@@ -682,6 +821,8 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
     let mut current_line = String::new();
     let mut cursor = 0usize;
     let mut input_history: Vec<String> = conversation
+        .lock()
+        .expect("conversation lock")
         .history
         .iter()
         .map(|exchange| exchange.message.clone())
@@ -690,22 +831,23 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
     let mut history_position: Option<usize> = None;
     let mut history_draft = String::new();
     let mut submission = 1;
+    let mut rows = InputRows::default();
     print!("> ");
     stdout.flush()?;
 
     loop {
         match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
+            KeyInput::Key(key) if key.kind == KeyEventKind::Press => {
                 if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                    print!("\r\n");
+                    rows.leave();
                     stdout.flush()?;
                     break;
                 }
                 if is_multiline_enter(key) {
                     begin_continuation(&mut buffer, &mut current_line);
                     cursor = current_line.chars().count();
-                    print!("\r\n{current_line}");
-                    stdout.flush()?;
+                    rows.leave();
+                    redraw_input(&mut stdout, &mut rows, false, &current_line, cursor)?;
                     continue;
                 }
                 match key.code {
@@ -714,11 +856,12 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                             current_line.pop();
                             begin_continuation(&mut buffer, &mut current_line);
                             cursor = current_line.chars().count();
-                            print!("\r\n{current_line}");
+                            rows.leave();
+                            redraw_input(&mut stdout, &mut rows, false, &current_line, cursor)?;
                         } else {
                             buffer.push_str(&current_line);
                             let submitted = buffer.clone();
-                            print!("\r\n");
+                            rows.leave();
                             report_submission(&mut buffer, submission, true, conversation)?;
                             if !submitted.trim().is_empty()
                                 && !submitted.contains('\n')
@@ -729,9 +872,9 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                             history_position = None;
                             history_draft.clear();
                             submission += 1;
-                            current_line = conversation.prefill.take().unwrap_or_default();
+                            current_line = conversation.lock().expect("conversation lock").prefill.take().unwrap_or_default();
                             cursor = current_line.chars().count();
-                            redraw_input(&mut stdout, true, &current_line, cursor)?;
+                            redraw_input(&mut stdout, &mut rows, true, &current_line, cursor)?;
                         }
                     }
                     KeyCode::Up if buffer.is_empty() && !input_history.is_empty() => {
@@ -745,7 +888,7 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                         history_position = Some(position);
                         current_line.clone_from(&input_history[position]);
                         cursor = current_line.chars().count();
-                        redraw_input(&mut stdout, true, &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, true, &current_line, cursor)?;
                     }
                     KeyCode::Down if buffer.is_empty() => {
                         if let Some(position) = history_position {
@@ -757,7 +900,7 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                                 current_line.clone_from(&history_draft);
                             }
                             cursor = current_line.chars().count();
-                            redraw_input(&mut stdout, true, &current_line, cursor)?;
+                            redraw_input(&mut stdout, &mut rows, true, &current_line, cursor)?;
                         }
                     }
                     KeyCode::Backspace => {
@@ -768,7 +911,7 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                             cursor -= 1;
                         }
                         history_position = None;
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Delete => {
                         let end = char_byte_index(&current_line, cursor + 1);
@@ -777,50 +920,53 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
                             current_line.replace_range(start..end, "");
                         }
                         history_position = None;
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Left if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
                         cursor = move_left_word(&current_line, cursor);
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Left if cursor > 0 => {
                         cursor -= 1;
-                        print!("\x1b[D");
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Right if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
                         cursor = move_right_word(&current_line, cursor);
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Right if cursor < current_line.chars().count() => {
                         cursor += 1;
-                        print!("\x1b[C");
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Home => {
                         cursor = 0;
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::End => {
                         cursor = current_line.chars().count();
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                         insert_at_cursor(&mut current_line, &mut cursor, &ch.to_string());
                         history_position = None;
-                        redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
+                    // Escape clears the line being typed; Ctrl+C is the way out.
                     KeyCode::Esc => {
-                        print!("\r\n");
-                        stdout.flush()?;
-                        break;
+                        current_line.clear();
+                        cursor = 0;
+                        history_position = None;
+                        redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
                     _ => {}
                 }
                 stdout.flush()?;
             }
-            Event::Paste(text) => {
-                insert_at_cursor(&mut current_line, &mut cursor, &text);
+            KeyInput::Paste(text) => {
+                // The input is one screen line per buffer line; pasted line breaks become spaces.
+                insert_at_cursor(&mut current_line, &mut cursor, &text.replace("\r\n", " ").replace(['\n', '\r'], " "));
                 history_position = None;
-                redraw_input(&mut stdout, buffer.is_empty(), &current_line, cursor)?;
+                redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
             }
             _ => {}
         }
@@ -831,6 +977,15 @@ fn run_terminal(conversation: &mut Conversation) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_input_lines_wrap_onto_rows() {
+        // "> " plus 8 characters in a 10-wide terminal fills exactly one row.
+        assert_eq!(input_layout(10, 10, 10), (1, 1, 0));
+        assert_eq!(input_layout(10, 10, 4), (1, 0, 4));
+        assert_eq!(input_layout(10, 25, 12), (2, 1, 2));
+        assert_eq!(input_layout(80, 5, 5), (0, 0, 5));
+    }
 
     #[test]
     fn supports_backslash_continuation_before_submission() {
