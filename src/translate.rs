@@ -30,7 +30,14 @@ pub fn vocabulary() -> Vec<Ops> {
         Ops::MakeImage,
         Ops::EditImage,
         Ops::DraftVideo,
+        Ops::MakeVideo,
         Ops::FinishVideo,
+        Ops::VideoSeconds,
+        Ops::VideoQuality,
+        Ops::SwapFace,
+        Ops::PickBox,
+        Ops::PickPoints,
+        Ops::CropImage,
         Ops::Serve,
         Ops::ListDirectory,
         Ops::ListFiles,
@@ -271,27 +278,196 @@ pub fn system_prompt() -> String {
 
 /// The vocabulary as `word ( inputs -- outputs ) description` lines, for prompts.
 pub fn word_listing_with(user_words: &[UserWord]) -> String {
-    vocabulary_with(user_words)
+    word_listing_for(user_words, "")
+}
+
+/// How much a prompt's word listing says, from most to least. Prompts use the most detailed
+/// level that fits the model's context, so small models with small contexts still get one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detail {
+    /// Every word described in full.
+    Full,
+    /// The six words most relevant to the request in full, the rest by a one-line summary.
+    Focused,
+    /// The three most relevant in full, the rest by signature alone.
+    Compact,
+    /// Only the eight most relevant, briefly, and the rest by name.
+    Minimal,
+}
+
+impl Detail {
+    pub const ALL: [Detail; 4] = [Detail::Full, Detail::Focused, Detail::Compact, Detail::Minimal];
+
+    /// How many worked examples a prompt at this level keeps.
+    pub fn examples(self) -> usize {
+        match self {
+            Detail::Full | Detail::Focused => usize::MAX,
+            Detail::Compact => 6,
+            Detail::Minimal => 3,
+        }
+    }
+}
+
+/// The worked examples a prompt keeps: all of them, or the `count` most relevant to `focus`
+/// (in their usual order), so a small prompt still shows how to use the words it needs.
+fn relevant_examples(focus: &str, count: usize) -> Vec<&'static (&'static str, &'static str)> {
+    if count >= EXAMPLES.len() {
+        return EXAMPLES.iter().collect();
+    }
+    let terms = focus_terms(focus);
+    let score = |(user, program): &(&str, &str)| {
+        let words = focus_terms(&format!("{user} {}", program.replace(['-', '_'], " ")));
+        terms.iter().filter(|t| words.contains(t)).count()
+    };
+    let mut ranked: Vec<usize> = (0..EXAMPLES.len()).collect();
+    ranked.sort_by_key(|&i| std::cmp::Reverse(score(&EXAMPLES[i])));
+    let mut keep: Vec<usize> = ranked.into_iter().take(count).collect();
+    keep.sort_unstable();
+    keep.into_iter().map(|i| &EXAMPLES[i]).collect()
+}
+
+/// What to rank by at a level: nothing at full detail, which keeps the prompt unchanging.
+fn focus_of(message: &str, detail: Detail) -> &str {
+    if detail == Detail::Full { "" } else { message }
+}
+
+/// A conservative token count for chat messages: about three characters per token, which
+/// over-counts ordinary text so prompts stay inside the context.
+pub fn estimate_tokens(messages: &[Json]) -> u64 {
+    messages.iter().map(|m| m.to_string().chars().count() as u64).sum::<u64>().div_ceil(3)
+}
+
+/// The prompt `build` makes at the most detailed level, starting at `from`, that fits within
+/// `budget` tokens; the least detailed if none does.
+pub fn fit(budget: u64, from: Detail, build: impl Fn(Detail) -> Vec<Json>) -> Vec<Json> {
+    let levels: Vec<Detail> = Detail::ALL.into_iter().skip_while(|d| *d != from).collect();
+    for (i, detail) in levels.iter().enumerate() {
+        let messages = build(*detail);
+        if i + 1 == levels.len() || estimate_tokens(&messages) <= budget {
+            return messages;
+        }
+    }
+    unreachable!("levels is never empty")
+}
+
+/// The vocabulary for a prompt about `focus`: the words most relevant to it described in
+/// full, the rest by a one-line summary, so the listing stays small as words are added.
+/// An empty focus describes every word in full.
+pub fn word_listing_for(user_words: &[UserWord], focus: &str) -> String {
+    let detail = if focus_terms(focus).is_empty() { Detail::Full } else { Detail::Focused };
+    word_listing_at(user_words, focus, detail)
+}
+
+/// The vocabulary at a level of detail, ranked by relevance to `focus`.
+pub fn word_listing_at(user_words: &[UserWord], focus: &str, detail: Detail) -> String {
+    let terms = focus_terms(focus);
+    let vocabulary = vocabulary_with(user_words);
+    let mut scored: Vec<(usize, usize)> = vocabulary.iter().enumerate().map(|(i, op)| (relevance(op, &terms), i)).filter(|(s, _)| *s > 0).collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let ranked: Vec<usize> = scored.iter().map(|(_, i)| *i).collect();
+    let in_full = match detail {
+        Detail::Full => vocabulary.len(),
+        Detail::Focused => 6,
+        Detail::Compact | Detail::Minimal => 3,
+    };
+    let full: Vec<usize> = if detail == Detail::Full { (0..vocabulary.len()).collect() } else { ranked.iter().copied().take(in_full).collect() };
+    // Minimal keeps only the most relevant words (or, with nothing to go on, the first ones).
+    let shown: Vec<usize> = if detail == Detail::Minimal {
+        let mut shown: Vec<usize> = ranked.iter().copied().take(8).collect();
+        shown.extend((0..vocabulary.len()).filter(|i| !ranked.contains(i)).take(8usize.saturating_sub(shown.len())));
+        shown
+    } else {
+        (0..vocabulary.len()).collect()
+    };
+    let mut lines: Vec<String> = vocabulary
         .iter()
-        .map(|op| {
+        .enumerate()
+        .filter(|(index, _)| shown.contains(index))
+        .map(|(index, op)| {
             if let Ops::UserCall { name, .. } = op {
                 let word = user_words.iter().find(|w| w.name == *name).expect("descriptor is from loaded words");
                 return format!("{} ( {} -- {} ) project-defined word", word.name, named_signature(&word.inputs), named_signature(&word.outputs));
             }
-            format!(
-                "{} ( {} -- {} ) {}",
-                op.token_name(),
-                signature(&op.inputs()),
-                signature(&op.outputs()),
-                op.description()
-            )
+            let head = format!("{} ( {} -- {} )", op.token_name(), signature(&op.inputs()), signature(&op.outputs()));
+            if full.contains(&index) {
+                format!("{head} {}", op.description())
+            } else if detail == Detail::Compact {
+                head
+            } else {
+                format!("{head} {}", brief(op.description()))
+            }
         })
-        .collect::<Vec<_>>()
-        .join("\n")
+        .collect();
+    if detail == Detail::Minimal {
+        let rest: Vec<String> = vocabulary.iter().enumerate().filter(|(i, _)| !shown.contains(i)).map(|(_, op)| op.token_name()).collect();
+        if !rest.is_empty() {
+            lines.push(format!("Other words: {}.", rest.join(", ")));
+        }
+    }
+    lines.join("\n")
+}
+
+/// A description cut to its first clause, at most about 70 characters.
+fn brief(description: &str) -> String {
+    let cut = description.find([':', ';', '(']).into_iter().chain(description.find(". ")).chain(description.find(", ")).min().unwrap_or(description.len());
+    let clause = description[..cut].trim_end_matches(['.', ' ']);
+    if clause.chars().count() <= 70 {
+        return format!("{clause}.");
+    }
+    let short: String = clause.chars().take(67).collect();
+    format!("{}….", short.trim_end())
+}
+
+/// The meaningful lowercase words of a message.
+fn focus_terms(text: &str) -> Vec<String> {
+    const COMMON: [&str; 24] = [
+        "the", "and", "for", "with", "this", "that", "from", "into", "onto", "want", "can", "how", "make", "run", "use", "save", "file", "please",
+        "what", "would", "could", "should", "tmp", "then",
+    ];
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|w| w.len() >= 3 && !COMMON.contains(&w.as_str()))
+        .map(|w| w.strip_suffix('s').filter(|s| s.len() >= 3).map(String::from).unwrap_or(w))
+        .collect()
+}
+
+/// How strongly a word matches the terms: a match in its name counts three times one in its
+/// description.
+fn relevance(op: &Ops, terms: &[String]) -> usize {
+    let name = op.token_name().to_lowercase();
+    let name_parts: Vec<&str> = name.split(['-', '_']).collect();
+    let description = focus_terms(op.description());
+    terms
+        .iter()
+        .map(|term| {
+            let in_name = name_parts.iter().any(|p| *p == term || (p.len() >= 4 && term.starts_with(p)));
+            3 * usize::from(in_name) + usize::from(description.iter().any(|d| d == term))
+        })
+        .sum()
 }
 
 pub fn system_prompt_with(user_words: &[UserWord]) -> String {
-    let words = word_listing_with(user_words);
+    system_prompt_at(user_words, "", Detail::Full)
+}
+
+/// The translator's instructions with a listing focused on `focus` (see `word_listing_for`).
+pub fn system_prompt_focused(user_words: &[UserWord], focus: &str) -> String {
+    let detail = if focus_terms(focus).is_empty() { Detail::Full } else { Detail::Focused };
+    system_prompt_at(user_words, focus, detail)
+}
+
+/// The translator's instructions with the listing at a level of detail.
+pub fn system_prompt_at(user_words: &[UserWord], focus: &str, detail: Detail) -> String {
+    let words = word_listing_at(user_words, focus, detail);
+    if detail == Detail::Minimal {
+        // For small contexts: the language's core rules only.
+        return format!(
+            "Translate each user message into one ForgeFlow program and output only the program. \
+             Words run left to right on a stack: \"text\" pushes a string and 12 an integer; each word pops its inputs (the rightmost input on top) and pushes its outputs. \
+             Inputs go before the word in the order listed, for example `\"out.png\" \"a banana\" make-image`. \
+             Paths are relative to the project root. To reply to the user, print a string.\n\nWords ( inputs -- outputs ):\n{words}"
+        );
+    }
     format!(
         "Translate each user message into one ForgeFlow program and output only the program.\n\
          A program is words run left to right on a stack: \"text\" pushes a string, 12 pushes an integer, \
@@ -316,7 +492,13 @@ pub fn system_prompt_with(user_words: &[UserWord]) -> String {
 
 /// Prompt for suggest mode (`? ...`): the model proposes programs to run instead of
 /// emitting one, so it can explain and admit when the vocabulary cannot do the task.
-pub fn suggest_prompt_with(user_words: &[UserWord]) -> String {
+pub fn suggest_prompt_with(user_words: &[UserWord], goal: &str, detail: Detail) -> String {
+    if detail == Detail::Minimal {
+        return format!(
+            "{}\n\nSUGGEST MODE: the user describes a goal. Reply with one to three candidate programs, one per line, each starting with `; `, and nothing else.",
+            system_prompt_at(user_words, goal, detail)
+        );
+    }
     format!(
         "{}\n\n\
          SUGGEST MODE overrides the instruction above to output only a program. The user describes a goal and wants the commands to run. \
@@ -328,14 +510,20 @@ pub fn suggest_prompt_with(user_words: &[UserWord]) -> String {
          Declare outputs only for values the body really leaves on the stack: `print` and `answer` consume their inputs and leave nothing, so a word ending in either has no outputs (`( path String -- )`). A word that takes its input from the stack must not also write a literal path or URL: `read_file` reads the path already on the stack. Put a definition before any commands that call it. A definition is saved only when the user runs it.\n\
          If no listed word can do the job, reply with a single plain sentence saying so instead of inventing words. \
          Nothing is executed.",
-        system_prompt_with(user_words)
+        system_prompt_at(user_words, goal, detail)
     )
 }
 
 /// Messages for suggest mode: the prompt, then worked examples shown as `; ` commands.
-pub fn suggest_messages_with(goal: &str, user_words: &[UserWord]) -> Vec<Json> {
-    let mut messages = vec![json!({"role": "system", "content": suggest_prompt_with(user_words)})];
-    for (user, program) in EXAMPLES {
+/// The suggest-mode request, at the most detailed level that leaves `reserve` of `context`
+/// tokens free for the reply.
+pub fn suggest_messages_with(goal: &str, user_words: &[UserWord], context: u64, reserve: u64) -> Vec<Json> {
+    fit(context.saturating_sub(reserve), Detail::Focused, |detail| suggest_messages_at(goal, user_words, detail))
+}
+
+fn suggest_messages_at(goal: &str, user_words: &[UserWord], detail: Detail) -> Vec<Json> {
+    let mut messages = vec![json!({"role": "system", "content": suggest_prompt_with(user_words, goal, detail)})];
+    for &(user, program) in relevant_examples(goal, detail.examples()) {
         if user.starts_with('[') || program == "help" || program.ends_with("answer") || program.contains("print\"") && !program.contains("list") {
             continue;
         }
@@ -352,7 +540,7 @@ pub fn suggest_messages_with(goal: &str, user_words: &[UserWord]) -> Vec<Json> {
 
 /// Example turns placed before the conversation; small models imitate real turns far
 /// better than examples described in the system prompt.
-pub const EXAMPLES: [(&str, &str); 22] = [
+pub const EXAMPLES: [(&str, &str); 23] = [
     ("hi!", r#""Hi! What can I do for you?" print"#),
     ("what can you do?", "help"),
     ("what's in the src folder?", r#""src" list_directory print"#),
@@ -394,6 +582,10 @@ pub const EXAMPLES: [(&str, &str); 22] = [
         r#"".tmp/ban.png" "A banana" make-image"#,
     ),
     ("start the web server so my phone can connect", r#""start" serve"#),
+    (
+        "put the face from actors/lead.png onto the person in shots/stunt.mp4 and save it as shots/stunt-lead.mp4",
+        r#""shots/stunt.mp4" "actors/lead.png" "shots/stunt-lead.mp4" swap-face"#,
+    ),
     ("make a quick video of a gladiator charging across the arena, save it as clips/charge.mp4", r#""clips/charge.mp4" "A gladiator charges across the arena" draft-video"#),
     (
         "in shots/arena.png, make it dusk and add blood spatter on the gladiator's shield",
@@ -488,14 +680,27 @@ pub fn messages(history: &[Exchange], message: &str, registers: &str) -> Vec<Jso
 }
 
 pub fn messages_with(history: &[Exchange], message: &str, registers: &str, user_words: &[UserWord]) -> Vec<Json> {
-    messages_on_stack(history, message, registers, "", user_words)
+    messages_on_stack(history, message, registers, "", user_words, u64::MAX)
 }
 
 /// Like `messages_with`, also telling the model what is already on the stack (`stack` is empty for none).
-pub fn messages_on_stack(history: &[Exchange], message: &str, registers: &str, stack: &str, user_words: &[UserWord]) -> Vec<Json> {
+/// The translator's request, at the most detailed level that fits `context` tokens (the full
+/// listing first, so a roomy context keeps one stable, cached prompt). If even the least
+/// detailed does not fit, earlier turns are left out.
+pub fn messages_on_stack(history: &[Exchange], message: &str, registers: &str, stack: &str, user_words: &[UserWord], context: u64) -> Vec<Json> {
+    let budget = context.saturating_sub(MAX_PROGRAM_TOKENS as u64 + 64);
+    let with_history = fit(budget, Detail::Full, |detail| messages_at(history, message, registers, stack, user_words, detail));
+    if estimate_tokens(&with_history) <= budget {
+        return with_history;
+    }
+    messages_at(&[], message, registers, stack, user_words, Detail::Minimal)
+}
+
+fn messages_at(history: &[Exchange], message: &str, registers: &str, stack: &str, user_words: &[UserWord], detail: Detail) -> Vec<Json> {
     let recent = &history[history_start(history.len())..];
-    let mut messages = vec![json!({"role": "system", "content": system_prompt_with(user_words)})];
-    for (user, program) in EXAMPLES {
+    let focus = if detail == Detail::Full { "" } else { message };
+    let mut messages = vec![json!({"role": "system", "content": system_prompt_at(user_words, focus, detail)})];
+    for &(user, program) in relevant_examples(focus_of(message, detail), detail.examples()) {
         messages.push(json!({"role": "user", "content": user}));
         messages.push(json!({"role": "assistant", "content": program}));
     }
@@ -625,7 +830,7 @@ pub fn translate_with(
     registers: &Registers,
     user_words: &[UserWord],
 ) -> Result<Translation, String> {
-    translate_on_stack(backend, history, message, registers, user_words, &[])
+    translate_on_stack(backend, history, message, registers, user_words, &[], u64::MAX)
 }
 
 /// Like `translate_with`, for a program that starts with `stack` (bottom to top) in place.
@@ -636,6 +841,7 @@ pub fn translate_on_stack(
     registers: &Registers,
     user_words: &[UserWord],
     stack: &[crate::value::Value],
+    context: u64,
 ) -> Result<Translation, String> {
     let kinds: Vec<TypeKind> = stack.iter().map(|value| value.kind()).collect();
     let stack_text = stack_summary(stack);
@@ -647,7 +853,7 @@ pub fn translate_on_stack(
         no_thinking: true,
         slot: Some(TRANSLATE_SLOT),
     };
-    let mut messages = messages_on_stack(history, message, &registers.summary(), &stack_text, user_words);
+    let mut messages = messages_on_stack(history, message, &registers.summary(), &stack_text, user_words, context);
     let mut last_error = String::new();
     for attempt in 1..=2 {
         let turn = backend.step(&messages, &[], &options, &mut |_| {})?;
@@ -947,5 +1153,67 @@ mod tests {
 
         let backend = Scripted(RefCell::new(vec!["print", "print"]));
         assert!(translate(&backend, &[], "x", &registers).unwrap_err().contains("could not translate"));
+    }
+}
+
+
+#[cfg(test)]
+mod focus_tests {
+    use super::*;
+
+    #[test]
+    fn focused_listings_describe_relevant_words_in_full_and_the_rest_briefly() {
+        let listing = word_listing_for(&[], "put the face from lead.webp onto the video target and save it");
+        let line = |name: &str| listing.lines().find(|l| l.starts_with(&format!("{name} "))).unwrap().to_string();
+        assert!(line("swap-face").contains("only that person changes"), "{}", line("swap-face"));
+        assert!(line("list_directory").len() < 140, "{}", line("list_directory"));
+        // Every word is still listed, with its signature.
+        assert_eq!(listing.lines().count(), vocabulary().len());
+        assert!(line("make-video").contains("( path images prompt -- saved_path )"));
+        // Without a focus, everything is in full.
+        assert_eq!(word_listing_for(&[], ""), word_listing_with(&[]));
+        // Signatures stay, so briefs save about half: 2078 against 4022 characters when written.
+        assert!(word_listing_for(&[], "zebra").len() * 10 < word_listing_with(&[]).len() * 6);
+    }
+
+    #[test]
+    fn briefs_stop_at_the_first_clause() {
+        assert_eq!(brief("Open a window on an image; pushes the pick as JSON."), "Open a window on an image.");
+        assert!(brief(&"word ".repeat(40)).chars().count() <= 70);
+    }
+
+    #[test]
+    fn prompts_fit_small_contexts_and_keep_the_relevant_words() {
+        let goal = "I want to run face swap on .tmp/clip.mp4 as the video target with .tmp/actor.webp as the face and save it to .tmp/face-swapped.mp4";
+        for context in [2048u64, 4096, 8192] {
+            let reserve = 1000;
+            let suggest = suggest_messages_with(goal, &[], context, reserve);
+            assert!(estimate_tokens(&suggest) <= context - reserve, "suggest at {context}: ~{} tokens", estimate_tokens(&suggest));
+            assert!(suggest[0]["content"].as_str().unwrap().contains("swap-face ("), "suggest at {context} lost swap-face");
+
+            let translate = messages_on_stack(&[], goal, "", "", &[], context);
+            let budget = context - MAX_PROGRAM_TOKENS as u64 - 64;
+            assert!(estimate_tokens(&translate) <= budget, "translate at {context}: ~{} tokens", estimate_tokens(&translate));
+            assert!(translate[0]["content"].as_str().unwrap().contains("swap-face ("), "translate at {context} lost swap-face");
+        }
+        // A roomy context keeps the full, unchanging prompt, so its cache is reused.
+        let roomy = messages_on_stack(&[], goal, "", "", &[], 8192);
+        assert_eq!(roomy[0]["content"], system_prompt_with(&[]));
+    }
+
+    #[test]
+    fn small_prompts_keep_the_most_relevant_examples() {
+        let kept = relevant_examples("put the face from a.png onto the person in b.mp4", 3);
+        assert_eq!(kept.len(), 3);
+        assert!(kept.iter().any(|(_, program)| program.contains("swap-face")));
+        assert_eq!(relevant_examples("anything", usize::MAX).len(), EXAMPLES.len());
+    }
+
+    #[test]
+    fn minimal_listings_keep_relevant_words_and_name_the_rest() {
+        let listing = word_listing_at(&[], "swap a face in a video", Detail::Minimal);
+        assert!(listing.contains("swap-face ("));
+        assert!(listing.lines().last().unwrap().starts_with("Other words: "));
+        assert!(listing.lines().count() <= 9);
     }
 }

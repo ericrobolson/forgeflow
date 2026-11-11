@@ -29,6 +29,20 @@ pub struct ImageModel {
     /// Further `sd-cli` arguments the model needs, such as its sampler.
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// For video models: how drafts differ from full quality, chosen by benchmarking speed
+    /// against what still reads well. Without it, drafts are 512×512 at the full step count.
+    #[serde(default)]
+    pub draft: Option<DraftSettings>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct DraftSettings {
+    pub width: u32,
+    pub height: u32,
+    pub steps: u32,
+    /// Appended after the model's own arguments, so they win where both set a flag.
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]

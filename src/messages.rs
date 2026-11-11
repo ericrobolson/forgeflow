@@ -104,6 +104,19 @@ impl Conversation {
         })
     }
 
+    /// The word listing about `focus` at the most detailed level that, with `fixed_chars` of
+    /// instructions around it, fits in `budget` tokens; small contexts get shorter listings.
+    fn fitted_listing(&self, focus: &str, fixed_chars: usize, budget: u64) -> String {
+        let words = &self.context.user_words;
+        for detail in [translate::Detail::Focused, translate::Detail::Compact] {
+            let listing = translate::word_listing_at(words, focus, detail);
+            if ((listing.chars().count() + fixed_chars + focus.chars().count()) as u64).div_ceil(3) <= budget {
+                return listing;
+            }
+        }
+        translate::word_listing_at(words, focus, translate::Detail::Minimal)
+    }
+
     fn line(&mut self, kind: Kind, text: impl Into<String>) {
         self.context.emit(Event::Line(kind, text.into()));
     }
@@ -216,15 +229,24 @@ impl Conversation {
 
     /// Suggest mode: streams candidate commands for a goal. Nothing is run or recorded.
     fn suggest(&mut self, goal: &str) {
-        let mut messages = translate::suggest_messages_with(goal, &self.context.user_words);
+        let mut messages = translate::suggest_messages_with(goal, &self.context.user_words, self.context_limit, SUGGEST_MAX_TOKENS as u64 + 600);
         let mut valid: Vec<String> = Vec::new();
         let mut notes: Vec<String> = Vec::new();
         for attempt in 0..3 {
+            // Retries carry earlier replies; stop before the prompt outgrows the context.
+            if estimate_tokens(&messages) + SUGGEST_MAX_TOKENS as u64 > self.context_limit {
+                if attempt == 0 {
+                    return self.error(format!("that request is too long for the model's {}-token context", self.context_limit));
+                }
+                break;
+            }
             let mut generated = String::new();
             let result = self.backend.step(
                 &messages,
                 &[],
-                &StepOptions { slot: Some(crate::server::ANSWER_SLOT), temperature: Some(0.0), no_thinking: true, ..StepOptions::default() },
+                // Suggestions are a few short lines; the cap keeps a rambling reply from
+                // overflowing the context when it is sent back for a retry.
+                &StepOptions { slot: Some(crate::server::ANSWER_SLOT), temperature: Some(0.0), no_thinking: true, max_tokens: Some(SUGGEST_MAX_TOKENS), ..StepOptions::default() },
                 &mut |delta| {
                     if let Delta::Text(text) = delta {
                         generated.push_str(&text);
@@ -299,16 +321,30 @@ impl Conversation {
 
     /// Sends ordinary messages directly to the model with no tools available.
     fn chat(&mut self, message: &str) {
-        let words = translate::word_listing_with(&self.context.user_words);
+        // The instructions get at most half of what the reply leaves; history uses the rest.
+        let words = self.fitted_listing(message, CHAT_INSTRUCTION_CHARS, self.context_limit.saturating_sub(CHAT_REPLY_TOKENS) / 2);
         let mut messages = vec![json!({
             "role": "system",
             "content": format!("{}\n\nThese are all the words that exist, written `word ( inputs -- outputs )`. Registers are written R0 to R15. Use only these words in any ForgeFlow example; never invent words, and never use `define`, `end`, `if`, loops other than `[ ... ] each`, or other languages' syntax. Words cannot write files, run commands or branch, so say so plainly if the user asks for that. Project words are defined with `: name ( inputName Type -- outputName Type ) body ;` (for example `: square ( n Int -- result Int ) dup * ;`), or with `; define a function called NAME that DESCRIPTION`, which writes the definition to `_forgeflow/user_words.ff.txt` for the user.\n\n{}", "You are ForgeFlow, a helpful conversational assistant. Answer the user's message directly. Include a concrete, copyable example only when the user is clearly asking for instructions on how to do something; don't add an example to general questions or direct requests unless requested. In translator mode (messages prefixed with `;`), the translator handles those how-to requests. Keep any ForgeFlow example valid: it is a postfix stack language, and runnable programs are prefixed with a semicolon. For example, a durable variable can be declared by adding `variable prompt` to `_forgeflow/user_words.ff.txt`. After it is loaded, store a prompt with `; \"A watercolor fox\" prompt !` and generate an image with `; \"art/fox.png\" prompt @ make-image` (the output path comes first, then the prompt). `$prompt` refers to a named input inside a user-defined word, not to a durable variable. No tools are available in chat. To run ForgeFlow code, the user starts a message with a semicolon.", words)
         })];
-        for exchange in &self.history {
+        // Leave room for the reply: drop the oldest turns until the prompt fits.
+        let budget = self.context_limit.saturating_sub(CHAT_REPLY_TOKENS);
+        let fixed = estimate_tokens(&messages) + estimate_tokens(&[json!({"role": "user", "content": message})]);
+        let mut kept = self.history.len();
+        while kept > 0 && fixed + history_tokens(&self.history[self.history.len() - kept..]) > budget {
+            kept -= 1;
+        }
+        if kept < self.history.len() {
+            self.note(format!("(left out the {} oldest turn(s) to fit the model's {}-token context)", self.history.len() - kept, self.context_limit));
+        }
+        for exchange in &self.history[self.history.len() - kept..] {
             messages.push(json!({"role": "user", "content": exchange.message}));
             messages.push(json!({"role": "assistant", "content": exchange.output}));
         }
         messages.push(json!({"role": "user", "content": message}));
+        if estimate_tokens(&messages) > budget {
+            return self.error(format!("that message is too long for the model's {}-token context; shorten it or raise `ctx` in _forgeflow/config.json", self.context_limit));
+        }
 
         let mut output = String::new();
         let sink = &mut self.context.sink;
@@ -375,6 +411,7 @@ impl Conversation {
                     &self.context.registers,
                     &self.context.user_words,
                     &self.context.stack,
+                    self.context_limit,
                 ) {
                     Ok(translated) => translated,
                     Err(error) => return self.error(error),
@@ -427,7 +464,7 @@ impl Conversation {
 
     /// Turns a natural-language definition request into one checked, persistent user word.
     fn initialize_word(&mut self, request: &str) {
-        let words = translate::word_listing_with(&self.context.user_words);
+        let words = self.fitted_listing(request, DEFINE_INSTRUCTION_CHARS, self.context_limit.saturating_sub(DEFINE_MAX_TOKENS as u64 * 3));
         let mut messages = vec![json!({
             "role": "system",
             "content": format!("{}\n\nThese are the only words the body may call, written `word ( inputs -- outputs )`; nothing else exists (there is no if, begin, open, type, 2dup, write_file or similar). Registers R0 to R15 are written as-is. The definition must end with `;`.\n{}", "You are the ForgeFlow word definition initializer. Convert the user's request into exactly one ForgeFlow definition, with no explanation, markdown, or surrounding text. Exact syntax: : name ( inputName Type -- outputName Type ) body ;. Example: : square ( n Int -- result Int ) dup * ;. Inputs are already on the initial data stack, so use stack operations such as dup; do not put words like 'input' in the code. Named inputs may be copied with $inputName. The body must leave exactly the declared outputs. Supported types: String, Int, Bool, List, Register, Address, Any. If the user does not specify an input type and the operation is type-generic (for example dup/drop/swap/print), declare the input as Any rather than guessing String or Int. ForgeFlow is a postfix stack language; use only its normal operators and currently available words. Never invent syntax from another language.", words)
@@ -439,7 +476,7 @@ impl Conversation {
             let response = self.backend.step(
                 &messages,
                 &[],
-                &StepOptions { temperature: Some(0.0), max_tokens: Some(400), no_thinking: true, ..StepOptions::default() },
+                &StepOptions { temperature: Some(0.0), max_tokens: Some(DEFINE_MAX_TOKENS), no_thinking: true, ..StepOptions::default() },
                 &mut |delta| if let Delta::Text(text) = delta { generated.push_str(&text); },
             );
             if let Err(error) = response { return self.error(format!("could not initialize word: {error}")); }
@@ -519,6 +556,22 @@ fn join_steps(steps: &[String], user_words: &[crate::user_words::UserWord], fill
     }
     let all: Vec<&str> = steps.iter().map(|s| s.trim_start_matches(';').trim()).collect();
     Some(format!("; {}", all.join(" ")))
+}
+
+/// Most tokens a suggestion reply may use.
+const SUGGEST_MAX_TOKENS: u32 = 400;
+/// Tokens kept free for a chat reply.
+const CHAT_REPLY_TOKENS: u64 = 1500;
+/// Most tokens a generated word definition may use.
+const DEFINE_MAX_TOKENS: u32 = 400;
+/// The length of the chat and word-definition instructions around the word listing.
+const CHAT_INSTRUCTION_CHARS: usize = 2400;
+const DEFINE_INSTRUCTION_CHARS: usize = 1300;
+
+use translate::estimate_tokens;
+
+fn history_tokens(history: &[Exchange]) -> u64 {
+    history.iter().map(|e| (e.message.chars().count() + e.output.chars().count() + 40) as u64).sum::<u64>().div_ceil(3)
 }
 
 fn is_definition_request(request: &str) -> bool {

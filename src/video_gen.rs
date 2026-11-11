@@ -55,12 +55,34 @@ pub struct Plan {
     pub fps: u32,
     /// After generating: interpolate to twice the frame rate and upscale to 1080p.
     pub finish: bool,
+    pub steps: u32,
+    /// Arguments after the model's own, such as draft speed-ups.
+    pub extra_args: Vec<String>,
 }
 
 pub fn plan(model: &ImageModel, quality: Quality) -> Plan {
     match quality {
-        Quality::Draft => Plan { width: DRAFT_SIZE.0, height: DRAFT_SIZE.1, frames: DRAFT_FRAMES.min(model.frames.max(1)), fps: model.fps, finish: false },
-        Quality::Full => Plan { width: model.width, height: model.height, frames: model.frames, fps: model.fps, finish: true },
+        Quality::Draft => {
+            let draft = model.draft.clone();
+            Plan {
+                width: draft.as_ref().map_or(DRAFT_SIZE.0, |d| d.width),
+                height: draft.as_ref().map_or(DRAFT_SIZE.1, |d| d.height),
+                frames: DRAFT_FRAMES.min(model.frames.max(1)),
+                fps: model.fps,
+                finish: false,
+                steps: draft.as_ref().map_or(model.steps, |d| d.steps),
+                extra_args: draft.map(|d| d.extra_args).unwrap_or_default(),
+            }
+        }
+        Quality::Full => Plan {
+            width: model.width,
+            height: model.height,
+            frames: model.frames,
+            fps: model.fps,
+            finish: true,
+            steps: model.steps,
+            extra_args: vec![],
+        },
     }
 }
 
@@ -314,7 +336,7 @@ fn segment_arguments(
     }
     for (flag, value) in [
         ("-p", prompt),
-        ("--steps", model.steps.to_string()),
+        ("--steps", plan.steps.to_string()),
         ("--cfg-scale", model.cfg_scale.to_string()),
         ("-W", plan.width.to_string()),
         ("-H", plan.height.to_string()),
@@ -325,6 +347,7 @@ fn segment_arguments(
         args.extend([flag.into(), value.into()]);
     }
     args.extend(model.extra_args.iter().map(Into::into));
+    args.extend(plan.extra_args.iter().map(Into::into));
     args.extend(["-o".into(), output.into()]);
     Ok(args)
 }

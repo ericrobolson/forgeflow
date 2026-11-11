@@ -227,6 +227,38 @@ pub fn nvidia_bandwidth_gbps(name: &str) -> Option<f64> {
         .map(|(_, gbps)| *gbps)
 }
 
+/// A process using GPU memory.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GpuProcess {
+    pub pid: u32,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// The processes using NVIDIA GPU memory, largest first; empty without `nvidia-smi`.
+pub fn gpu_processes() -> Vec<GpuProcess> {
+    let Ok(output) = Command::new("nvidia-smi")
+        .args(["--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"])
+        .output()
+    else {
+        return vec![];
+    };
+    let mut processes = parse_gpu_processes(&String::from_utf8_lossy(&output.stdout));
+    processes.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    processes
+}
+
+fn parse_gpu_processes(csv: &str) -> Vec<GpuProcess> {
+    csv.lines()
+        .filter_map(|line| {
+            let fields: Vec<&str> = line.split(',').map(str::trim).collect();
+            let [pid, name, mib] = fields[..] else { return None };
+            let name = Path::new(name).file_name().map_or(name.to_string(), |n| n.to_string_lossy().into_owned());
+            Some(GpuProcess { pid: pid.parse().ok()?, name, bytes: mib.parse::<u64>().ok()? * 1024 * 1024 })
+        })
+        .collect()
+}
+
 /// Free memory on the NVIDIA GPU with the least free, or `None` without one.
 pub fn gpu_free_bytes() -> Option<u64> {
     let output = Command::new("nvidia-smi")
@@ -308,6 +340,13 @@ mod tests {
         let pair = parse_nvidia_smi("NVIDIA GeForce RTX 4090, 24564, 8.9\nNVIDIA GeForce RTX 3090, 24576, 8.6").unwrap();
         assert_eq!((pair.count, pair.compute_caps.len()), (2, 2));
         assert_eq!(parse_nvidia_smi("No devices were found"), None);
+    }
+
+    #[test]
+    fn reads_gpu_processes() {
+        let processes = parse_gpu_processes("2914972, /home/eric/local-models/llama.cpp/build/bin/llama-server, 19454\n11905, /usr/bin/sunshine, 262\nbad line");
+        assert_eq!(processes.len(), 2);
+        assert_eq!(processes[0], GpuProcess { pid: 2914972, name: "llama-server".into(), bytes: 19454 * 1024 * 1024 });
     }
 
     #[test]

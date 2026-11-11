@@ -93,6 +93,14 @@ pub enum Ops {
     FinishVideo,
     /// Plan keyframes for a prompt, make them, and animate a draft video through them.
     DraftVideo,
+    /// Open a window on an image or video frame for clicks; pushes the pick as JSON.
+    PickPoints,
+    /// Open a window on an image or video frame to drag a box; pushes the pick as JSON.
+    PickBox,
+    /// Save the boxed part of an image (or video frame) from `pick-box`.
+    CropImage,
+    /// Put the face in an image onto a person in a video or image, with FaceFusion.
+    SwapFace,
 }
 
 impl Ops {
@@ -141,6 +149,10 @@ impl Ops {
             Ops::VideoSeconds,
             Ops::FinishVideo,
             Ops::DraftVideo,
+            Ops::PickPoints,
+            Ops::PickBox,
+            Ops::CropImage,
+            Ops::SwapFace,
         ]
     }
 
@@ -170,6 +182,10 @@ impl Ops {
             Ops::VideoSeconds => "video-seconds",
             Ops::FinishVideo => "finish-video",
             Ops::DraftVideo => "draft-video",
+            Ops::PickPoints => "pick-points",
+            Ops::PickBox => "pick-box",
+            Ops::CropImage => "crop-image",
+            Ops::SwapFace => "swap-face",
             Ops::ListDirectory => "list_directory",
             Ops::ListFiles => "list_files",
             Ops::Summarize => "summarize",
@@ -209,6 +225,10 @@ impl Ops {
             Ops::MakeImage => "Generate one image, locally with stable-diffusion.cpp or with OpenRouter, and save it inside the project as a PNG.",
             Ops::MakeVideo => "Make a video locally that passes through the given keyframe images in order (a path, comma-separated paths, a folder of images, or \"\" for none) as the prompt describes, and save it as an .mp4.",
             Ops::VideoQuality => "Set make-video's quality: \"draft\" (512×512, quick, for iterating) or \"full\" (the model's resolution, interpolated and upscaled to 1080p).",
+            Ops::PickPoints => "Open a window showing an image or video (with a frame slider) and wait for clicks: left-click what to include, right-click what to leave out. Pushes the pick (frame time and points in pixels) as JSON.",
+            Ops::PickBox => "Open a window showing an image or video (with a frame slider) and wait for a dragged box, such as around a face. Pushes the pick (frame time and box in pixels) as JSON.",
+            Ops::SwapFace => "Put the face from an image onto a person in a video or image. Args: target (video/image to change), face image (png/jpg/webp, not a video), output path. A directory or \"\" output generates NAME-swapped.<ext>; if several people appear, a window asks which to replace and only that person changes. Uses FaceFusion, installed on first use.",
+            Ops::CropImage => "Save the part of an image (or of the picked video frame) inside a pick-box box as a PNG.",
             Ops::DraftVideo => "Make a draft video from a prompt alone: plans and generates start and end keyframes (saved beside it as NAME-key-N.png) so the characters stay consistent, then animates through them at draft quality for video-seconds. Finish it with finish-video.",
             Ops::FinishVideo => "Upscale a video in the project to 1080p and double its frame rate (smoother motion), saving NAME-finished.mp4 beside it; for finishing a draft.",
             Ops::VideoSeconds => "Set how long make-video's videos are, in seconds (0 for one default-length segment per pair of keyframes).",
@@ -302,6 +322,39 @@ impl Ops {
                 config.video_quality = quality.name().into();
                 config.save(&folder)?;
                 context.say(&format!("Video quality: {}", quality.name()));
+            }
+            Ops::PickPoints | Ops::PickBox => {
+                let prompt = pop(context)?.expect_string()?;
+                let media = pop(context)?.expect_string()?;
+                let path = context.project.resolve(&media)?;
+                let mode = if *self == Ops::PickBox { crate::picker::Mode::Box } else { crate::picker::Mode::Points };
+                context.progress(format!("Waiting for the picker window: {prompt}"));
+                let pick = crate::picker::pick(&crate::picker::Request { media: path, prompt, mode, outlines: vec![] })?
+                    .ok_or("the picker was cancelled")?;
+                context.stack.push(Value::String(serde_json::to_string(&pick).map_err(|e| e.to_string())?));
+            }
+            Ops::SwapFace => {
+                let output = pop(context)?.expect_string()?;
+                let face = pop(context)?.expect_string()?;
+                let target = pop(context)?.expect_string()?;
+                let saved = swap_face(context, &target, &face, &output)?;
+                context.stack.push(Value::String(saved));
+            }
+            Ops::CropImage => {
+                let relative = pop(context)?.expect_string()?;
+                let pick = crate::picker::Pick::parse(&pop(context)?.expect_string()?)?;
+                let image = pop(context)?.expect_string()?;
+                let source = context.project.resolve(&image)?;
+                let requested = std::path::Path::new(relative.trim()).with_extension("png");
+                let output = context.project.resolve(requested.to_str().ok_or("crop path is not valid UTF-8")?)?;
+                crate::picker::crop(&source, &pick, &output)?;
+                let saved = output
+                    .strip_prefix(&context.project.root)
+                    .map_err(|_| "crop path is outside the project".to_string())?
+                    .to_string_lossy()
+                    .into_owned();
+                context.emit(crate::events::Event::Image(saved.clone()));
+                context.stack.push(Value::String(saved));
             }
             Ops::DraftVideo => {
                 let prompt = pop(context)?.expect_string()?;
@@ -642,6 +695,20 @@ impl Ops {
             Ops::VideoQuality => vec![Type::str("quality", "\"draft\" or \"full\"")],
             Ops::VideoSeconds => vec![Type::new("seconds", Int, "length in seconds, or 0 for the default")],
             Ops::FinishVideo => vec![Type::str("video", "path of the video, relative to the project root")],
+            Ops::PickPoints | Ops::PickBox => vec![
+                Type::str("media", "image or video path relative to the project root"),
+                Type::str("prompt", "what to ask for, shown in the window, such as \"Click the stunt performer's face\""),
+            ],
+            Ops::SwapFace => vec![
+                Type::str("target", "video or image to change, relative to the project root"),
+                Type::str("face", "image of the face to put on (png, jpg, webp), such as a crop from crop-image"),
+                Type::str("path", "output path relative to the project root (a directory generates NAME-swapped.<ext> inside it; \"\" for NAME-swapped beside the target). Videos are saved as .mp4, images as .png"),
+            ],
+            Ops::CropImage => vec![
+                Type::str("image", "image or video path the box was picked on"),
+                Type::str("box", "the pick from pick-box"),
+                Type::str("path", "output path relative to the project root; saved as PNG"),
+            ],
             Ops::DraftVideo => vec![
                 Type::str("path", "output path relative to the project root; saved as .mp4"),
                 Type::str("prompt", "the shot: who is in it, what happens, the setting"),
@@ -714,6 +781,10 @@ impl Ops {
             Ops::MakeVideo => vec![Type::str("saved_path", "project-relative path of the video")],
             Ops::FinishVideo => vec![Type::str("saved_path", "project-relative path of the finished video")],
             Ops::DraftVideo => vec![Type::str("saved_path", "project-relative path of the draft video")],
+            Ops::PickPoints => vec![Type::str("points", "the pick as JSON: frame time and points in pixels")],
+            Ops::PickBox => vec![Type::str("box", "the pick as JSON: frame time and box in pixels")],
+            Ops::CropImage => vec![Type::str("saved_path", "project-relative path of the cropped image")],
+            Ops::SwapFace => vec![Type::str("saved_path", "project-relative path of the result")],
             Ops::ListDirectory => vec![Type::new("entries", List, "the folder's entries")],
             Ops::ListFiles => vec![Type::new("files", List, "the folder's files")],
             Ops::RegView | Ops::RegSearch | Ops::Grep => vec![Type::str("lines", "numbered lines")],
@@ -900,7 +971,12 @@ fn with_gpu_room<T>(
     model: &crate::image_models::ImageModel,
     run: impl FnOnce(&mut Context) -> Result<T, String>,
 ) -> Result<T, String> {
-    let paused = pause_for(context, model);
+    with_gpu_bytes(context, &model.id, crate::image_gen::gpu_bytes_needed(model), run)
+}
+
+/// `with_gpu_room` for work that is not a catalog model, by name and GPU bytes needed.
+fn with_gpu_bytes<T>(context: &mut Context, label: &str, needed: u64, run: impl FnOnce(&mut Context) -> Result<T, String>) -> Result<T, String> {
+    let paused = pause_for(context, label, needed);
     let result = run(context);
     if paused {
         context.progress("Resuming llama-server…");
@@ -911,25 +987,213 @@ fn with_gpu_room<T>(
     result
 }
 
-/// Stops this session's llama-server if the GPU lacks room for `model`; true if it did.
-fn pause_for(context: &mut Context, model: &crate::image_models::ImageModel) -> bool {
-    let owned = context.server.as_ref().is_some_and(|s| s.is_owned());
-    if !owned {
-        return false;
-    }
-    let needed = crate::image_gen::gpu_bytes_needed(model);
+/// Stops this session's llama-server if the GPU lacks `needed` bytes for `label`; true if it did.
+fn pause_for(context: &mut Context, label: &str, needed: u64) -> bool {
     let Some(free) = crate::device::gpu_free_bytes() else { return false };
     if free >= needed {
         return false;
     }
+    let owned = context.server.as_ref().is_some_and(|s| s.is_owned());
+    if !owned {
+        // Not ours to stop, such as another ForgeFlow session's model: say what holds the GPU.
+        let holders = crate::device::gpu_processes()
+            .into_iter()
+            .filter(|p| p.bytes >= 1_000_000_000)
+            .map(|p| format!("{} (PID {}, {})", p.name, p.pid, models::gb(p.bytes)))
+            .collect::<Vec<_>>();
+        context.progress(format!(
+            "warning: only {} of GPU memory is free and {label} needs about {}; {}. It may fail or run slowly; free the GPU (for example, quit the other ForgeFlow session) or run this from the session that started it.",
+            models::gb(free),
+            models::gb(needed),
+            if holders.is_empty() { "something else is using it".to_string() } else { format!("in use by {}", holders.join(", ")) }
+        ));
+        return false;
+    }
     context.progress(format!(
         "Pausing llama-server to free GPU memory for {} ({} free, ~{} needed)…",
-        model.id,
+        label,
         models::gb(free),
         models::gb(needed)
     ));
     context.server = None;
     true
+}
+
+/// Surroundings kept around a boxed source face, as a share of the box's longer side.
+const FACE_MARGIN: f32 = 0.25;
+/// Small source-face crops are enlarged to at least this many pixels on the shorter side.
+const FACE_MIN_SIDE: u32 = 512;
+
+/// GPU memory FaceFusion's swapper and face analysers use while running: measured at a 5.3 GB
+/// peak for a 1080p video with the 512 px swap, plus a margin.
+const FACEFUSION_GPU_BYTES: u64 = 7_000_000_000;
+
+/// `swap-face`: finds the faces in `target` (a video or image); if more than one person
+/// appears, asks which to replace (on the frame showing the most faces, with each outlined)
+/// and sets the match distance so nobody else is changed; then swaps and saves. The `face`
+/// must be an image (webp, png, jpg). The output path, if a directory or empty, generates
+/// `<target-stem>-swapped.<ext>` inside it (or beside the target for `""`).
+fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> Result<String, String> {
+    use crate::events::Event;
+    use crate::facefusion::Target;
+    let target = context.project.resolve(target)?;
+    let face = context.project.resolve(face)?;
+    for path in [&target, &face] {
+        if !path.is_file() {
+            return Err(format!("{} is not a file in the project", path.display()));
+        }
+    }
+    let is_video = target
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["mp4", "webm", "mov", "mkv", "avi", "m4v"].contains(&e.to_ascii_lowercase().as_str()));
+    let extension = if is_video { "mp4" } else { "png" };
+    let output = if output.trim().is_empty() {
+        let stem = target.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        target.with_file_name(format!("{stem}-swapped.{extension}"))
+    } else {
+        // If the output is a directory (ends in `/` or has no file name), generate
+        // `<target-stem>-swapped.<ext>` inside it; otherwise treat it as the file path.
+        let trimmed = output.trim();
+        let requested = std::path::Path::new(trimmed);
+        let has_file_name = requested.file_name().is_some_and(|f| !f.is_empty()) && !trimmed.ends_with('/');
+        let requested = if has_file_name {
+            requested.with_extension(extension)
+        } else {
+            let stem = target.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            requested.join(format!("{stem}-swapped.{extension}"))
+        };
+        context.project.resolve(requested.to_str().ok_or("output path is not valid UTF-8")?)?
+    };
+    // Outputs are prefixed with when they were made (local time), so runs never overwrite
+    // each other and sort in order.
+    let stamp = chrono::Local::now().format("%y%m%d%H%M%S").to_string();
+    let output = output.with_file_name(format!("{stamp}-{}", output.file_name().unwrap_or_default().to_string_lossy()));
+
+    // Isolate the source face: box it, then crop it with some surroundings (the detector needs
+    // the head around a face to find it) and enlarge small crops for a reliable detection.
+    context.progress("Waiting for the picker window: box the face to use");
+    let request = crate::picker::Request {
+        media: face.clone(),
+        prompt: "Drag a box around the face to put on".into(),
+        mode: crate::picker::Mode::Box,
+        outlines: vec![],
+    };
+    let pick = crate::picker::pick(&request)?.ok_or("the picker was cancelled")?;
+    let face_stem = face.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let face_crop = output.with_file_name(format!("{stamp}-{face_stem}-face.png"));
+    let (width, height) = crate::picker::crop_face(&face, &pick, &face_crop, FACE_MARGIN, FACE_MIN_SIDE)?;
+    context.progress(format!("Using the boxed face ({width}×{height}), saved as {}.", face_crop.file_name().unwrap_or_default().to_string_lossy()));
+    if let Ok(relative) = face_crop.strip_prefix(&context.project.root) {
+        context.emit(Event::Image(relative.to_string_lossy().into_owned()));
+    }
+    let face = face_crop;
+    let facefusion = crate::facefusion::ensure(&mut |line| context.progress(line))?;
+    // FaceFusion writes the same format it reads, so other video formats go through an mp4
+    // copy, used for every step so frame numbers agree.
+    let is_mp4 = target.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+    let converted = if is_video && !is_mp4 {
+        let copy = std::env::temp_dir().join(format!("forgeflow-swap-{}.mp4", uuid::Uuid::now_v7()));
+        context.progress(format!("Converting {} to mp4 for FaceFusion…", target.file_name().unwrap_or_default().to_string_lossy()));
+        to_mp4(&target, &copy)?;
+        Some(copy)
+    } else {
+        None
+    };
+    let target = converted.clone().unwrap_or(target);
+    let saved: Result<String, String> = with_gpu_bytes(context, "FaceFusion", FACEFUSION_GPU_BYTES, |context| {
+        context.progress("Looking for faces…");
+        let samples = facefusion.faces(&target)?;
+        let busiest = samples.iter().max_by_key(|s| s.faces.len()).filter(|s| !s.faces.is_empty());
+        let Some(busiest) = busiest else {
+            return Err("no faces found to replace".into());
+        };
+        let chosen = if busiest.faces.len() == 1 {
+            context.progress("One person in view throughout: replacing every face.");
+            Target::Every
+        } else {
+            // Show the busiest frame with each face outlined, and ask which to replace.
+            let still = if is_video {
+                let still = std::env::temp_dir().join(format!("forgeflow-faces-{}.png", uuid::Uuid::now_v7()));
+                extract_frame(&target, busiest.frame, &still)?;
+                still
+            } else {
+                target.clone()
+            };
+            let request = crate::picker::Request {
+                media: still.clone(),
+                prompt: format!("{} faces found: click the one to replace", busiest.faces.len()),
+                mode: crate::picker::Mode::Points,
+                outlines: busiest.faces.clone(),
+            };
+            context.progress("Waiting for the picker window: click the face to replace");
+            let pick = crate::picker::pick(&request);
+            if is_video {
+                let _ = std::fs::remove_file(&still);
+            }
+            let pick = pick?.ok_or("the picker was cancelled")?;
+            let click = pick.points.iter().find(|p| p.include).ok_or("no face was clicked")?;
+            let position = crate::facefusion::face_at(busiest, click.x, click.y).ok_or("no face near that click")?;
+            let threshold = facefusion.threshold(&target, busiest.frame, position)?;
+            context.progress(format!(
+                "Matching that person within distance {:.2} (nearest other person {}).",
+                threshold.distance,
+                threshold.nearest_other.map_or("not seen".into(), |d| format!("{d:.2}"))
+            ));
+            Target::Reference { frame: busiest.frame, position, distance: threshold.distance }
+        };
+        let started = std::time::Instant::now();
+        facefusion.swap(&face, &target, &output, chosen, is_video, &mut |line| context.progress(line))?;
+        context.progress(format!("Swapped in {:.0}s.", started.elapsed().as_secs_f64()));
+        // Emit and compute the saved path here, before with_gpu_bytes resumes the
+        // llama-server, so the video is registered and its path returned first.
+        let saved = output
+            .strip_prefix(&context.project.root)
+            .map_err(|_| "result is outside the project".to_string())?
+            .to_string_lossy()
+            .into_owned();
+        context.emit(if is_video { Event::Video(saved.clone()) } else { Event::Image(saved.clone()) });
+        Ok(saved)
+    });
+    if let Some(copy) = converted {
+        let _ = std::fs::remove_file(copy);
+    }
+    saved
+}
+
+/// Re-encodes a video as a high-quality H.264 `.mp4`, keeping its audio, on the NVIDIA
+/// encoder when there is one.
+fn to_mp4(video: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
+    let encode = |codec: &[&str]| {
+        std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(video)
+            .args(codec)
+            .args(["-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"])
+            .arg(output)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    if encode(&["-c:v", "h264_nvenc", "-preset", "p6", "-cq", "16"]) || encode(&["-c:v", "libx264", "-preset", "medium", "-crf", "14"]) {
+        Ok(())
+    } else {
+        Err(format!("could not convert {} to mp4 (is ffmpeg installed?)", video.display()))
+    }
+}
+
+/// Saves frame `number` of `video` (counting from 0, as FaceFusion does) as an image.
+fn extract_frame(video: &std::path::Path, number: u64, output: &std::path::Path) -> Result<(), String> {
+    let result = std::process::Command::new("ffmpeg")
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(video)
+        .args(["-vf", &format!("select=eq(n\\,{number})"), "-vsync", "0", "-frames:v", "1"])
+        .arg(output)
+        .output()
+        .map_err(|e| format!("ffmpeg is needed to read videos: {e}"))?;
+    if !result.status.success() || !output.is_file() {
+        return Err(format!("could not read frame {number} of {}", video.display()));
+    }
+    Ok(())
 }
 
 /// `draft-video`: plans keyframes with the chat model (or plain wording without one),

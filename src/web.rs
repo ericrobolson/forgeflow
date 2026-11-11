@@ -635,7 +635,7 @@ fn turn_program(message: &str, mode: Mode, uploads: &[String], quality: Option<&
                 _ => "draft",
             };
             let seconds = seconds.unwrap_or(0).min(600);
-            let output = quote(&next_path(root, "video", "mp4"));
+            let output = quote(&timestamped_path(root, "video", "mp4"));
             // Without photos, draft-video makes its own keyframes so characters stay consistent.
             if uploads.is_empty() && quality == "draft" {
                 return Some(format!("; {seconds} video-seconds {output} {} draft-video drop", quote(message)));
@@ -652,6 +652,32 @@ fn turn_program(message: &str, mode: Mode, uploads: &[String], quality: Option<&
         Mode::Chat if !uploads.is_empty() && !message.starts_with([';', '/', '?']) => Some(edit()),
         Mode::Chat => Some(message.to_string()),
     }
+}
+
+/// `.tmp/NAME-YYYYMMDD-HHMMSS.EXT` (UTC), so videos sort by when they were made; a counter
+/// is added if two land in the same second.
+fn timestamped_path(root: &Path, name: &str, extension: &str) -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let stamp = utc_stamp(secs);
+    std::iter::once(format!("{WEB_DIR}/{name}-{stamp}.{extension}"))
+        .chain((2..).map(|n| format!("{WEB_DIR}/{name}-{stamp}-{n}.{extension}")))
+        .find(|path| !root.join(path).exists())
+        .expect("a free name")
+}
+
+/// Seconds since 1970 as `YYYYMMDD-HHMMSS` in UTC (civil-from-days, Howard Hinnant's method).
+fn utc_stamp(secs: u64) -> String {
+    let (days, rest) = (secs / 86_400, secs % 86_400);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}", rest / 3600, rest % 3600 / 60, rest % 60)
 }
 
 /// `.tmp/NAME-N.EXT` with the first N not taken.
@@ -918,20 +944,27 @@ mod tests {
         );
         assert_eq!(
             run("they fight", Mode::Video, &two, Some("full")).as_deref(),
-            Some(r#"; "full" video-quality 0 video-seconds ".tmp/video-1.mp4" ".tmp/uploads/photo-1.png,.tmp/uploads/photo-2.png" "they fight" make-video drop"#)
+            Some(format!(r#"; "full" video-quality 0 video-seconds "{}" ".tmp/uploads/photo-1.png,.tmp/uploads/photo-2.png" "they fight" make-video drop"#, timestamped_path(&root, "video", "mp4")).as_str())
         );
         assert_eq!(
             run("a storm", Mode::Video, &[], None).as_deref(),
-            Some(r#"; 0 video-seconds ".tmp/video-1.mp4" "a storm" draft-video drop"#)
+            Some(format!(r#"; 0 video-seconds "{}" "a storm" draft-video drop"#, timestamped_path(&root, "video", "mp4")).as_str())
         );
         assert_eq!(
             turn_program("a storm", Mode::Video, &[], None, Some(7), &root).as_deref(),
-            Some(r#"; 7 video-seconds ".tmp/video-1.mp4" "a storm" draft-video drop"#)
+            Some(format!(r#"; 7 video-seconds "{}" "a storm" draft-video drop"#, timestamped_path(&root, "video", "mp4")).as_str())
         );
         std::fs::create_dir_all(root.join(".tmp")).unwrap();
         std::fs::write(root.join(".tmp/image-1.png"), b"").unwrap();
         assert_eq!(next_path(&root, "image", "png"), ".tmp/image-2.png");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn timestamps_are_utc_calendar_times() {
+        assert_eq!(utc_stamp(0), "19700101-000000");
+        assert_eq!(utc_stamp(1_794_419_768), "20261111-175608");
+        assert_eq!(utc_stamp(951_782_400), "20000229-000000");
     }
 
     #[test]
