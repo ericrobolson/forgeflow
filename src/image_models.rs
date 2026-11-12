@@ -204,7 +204,13 @@ pub fn effective_generation(config: &Config) -> (Config, Option<String>) {
 pub fn describe_selection(config: &Config) -> String {
     match config.image_backend {
         ImageBackendKind::OpenRouter => format!("OpenRouter · {}", config.image_model),
-        ImageBackendKind::Local => format!("local · {}", config.local_image_model),
+        ImageBackendKind::Local => {
+            let mut selection = format!("local · {}", config.local_image_model);
+            if let Some(lora) = &config.lora {
+                selection.push_str(&format!(" · LoRA {} at {}", lora.trigger, lora.strength));
+            }
+            selection
+        }
     }
 }
 
@@ -281,6 +287,11 @@ pub fn select(folder: &Path, choice: &str) -> Result<String, String> {
                 config.local_video_model = id.clone();
                 config.save(folder)?;
                 return Ok(format!("making videos with local · {id}"));
+            }
+            if let Some(lora) = &config.lora {
+                if lora.base_model != id {
+                    return Err(format!("selected LoRA requires {}; run forgeflow lora off before selecting {id}", lora.base_model));
+                }
             }
             // An edit model also generates from text alone, so it serves both words.
             if resolve_installed(&id)?.task == Task::Edit {

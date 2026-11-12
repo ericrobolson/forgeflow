@@ -36,6 +36,7 @@ pub fn vocabulary() -> Vec<Ops> {
         Ops::VideoQuality,
         Ops::SwapFace,
         Ops::AnimeStyle,
+        Ops::LoraInit, Ops::LoraScan, Ops::LoraCheck, Ops::LoraPrepare, Ops::TrainLora, Ops::UseLora,
         Ops::PickBox,
         Ops::PickPoints,
         Ops::CropImage,

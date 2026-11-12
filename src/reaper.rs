@@ -9,9 +9,21 @@
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The argument that runs ForgeFlow as a watcher.
 pub const REAP_ARG: &str = "__reap";
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Call before other work in a host executable. Dispatches internal watcher
+/// invocations and opts this host into self-executing crash watchers.
+pub fn initialize() {
+    if std::env::args().nth(1).as_deref() == Some(REAP_ARG) {
+        let Some(pid) = std::env::args().nth(2) else { std::process::exit(2) };
+        run_watcher(&pid);
+    }
+    ENABLED.store(true, Ordering::Relaxed);
+}
 /// What ForgeFlow writes when it has stopped the child itself.
 const RELEASED: u8 = b'x';
 /// How long a child has to exit after SIGTERM before it is killed.
@@ -26,7 +38,10 @@ pub struct Reaper {
 
 /// Starts a watcher that stops `pid` if this process ends without releasing it. Returns
 /// `None` if the watcher cannot start; the child then relies on normal cleanup alone.
+/// Library hosts must call `initialize` before doing other work. Without that
+/// opt-in, return None rather than recursively re-running an unaware host.
 pub fn watch(pid: u32) -> Option<Reaper> {
+    if !ENABLED.load(Ordering::Relaxed) { return None; }
     let exe = crate::util::self_executable().ok()?;
     let mut watcher = Command::new(exe)
         .args([REAP_ARG, &pid.to_string()])
@@ -74,4 +89,12 @@ fn stop(pid: u32) {
         std::thread::sleep(Duration::from_millis(100));
     }
     signal("-KILL");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unaware_library_hosts_do_not_reexecute_themselves() {
+        assert!(super::watch(999_999).is_none());
+    }
 }

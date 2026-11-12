@@ -10,6 +10,7 @@ pub mod events;
 pub mod facefusion;
 pub mod image_gen;
 pub mod image_models;
+pub mod lora;
 pub mod messages;
 pub mod models;
 pub mod ops;

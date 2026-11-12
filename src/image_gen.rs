@@ -28,7 +28,9 @@ pub fn backend(config: &Config) -> Result<Box<dyn ImageBackend>, String> {
     match config.image_backend {
         ImageBackendKind::Local => {
             let model = image_models::resolve_installed(&config.local_image_model)?;
-            Ok(Box::new(LocalImageBackend::new(model)?))
+            let mut backend = LocalImageBackend::new(model)?;
+            if let Some(lora) = &config.lora { backend = backend.with_lora(lora.clone())?; }
+            Ok(Box::new(backend))
         }
         ImageBackendKind::OpenRouter => Ok(Box::new(OpenRouterImageBackend::from_environment(&config.image_model)?)),
     }
@@ -112,6 +114,7 @@ pub enum EditEvent { Progress(String), Preview(PathBuf) }
 pub struct LocalImageBackend {
     binary: PathBuf,
     model: ImageModel,
+    lora: Option<crate::lora::ActiveLora>,
 }
 
 /// Most reference images an edit takes; Qwen Image Edit is trained on up to three or four.
@@ -120,7 +123,20 @@ pub const MAX_EDIT_INPUTS: usize = 4;
 impl LocalImageBackend {
     pub fn new(model: ImageModel) -> Result<Self, String> {
         let binary = crate::toolchain::ensure(crate::toolchain::Tool::SdCli)?;
-        Ok(Self { binary, model })
+        Ok(Self { binary, model, lora: None })
+    }
+
+    pub fn with_lora(mut self, lora: crate::lora::ActiveLora) -> Result<Self, String> {
+        if self.model.id != lora.base_model || self.model.task != image_models::Task::Generate {
+            return Err(format!("selected LoRA requires {}; current model is {}. Select its base model or run forgeflow lora off", lora.base_model, self.model.id));
+        }
+        if !lora.strength.is_finite() || !(0.0..=2.0).contains(&lora.strength) || !lora.path.is_file() {
+            return Err("selected LoRA is missing or has an invalid strength".into());
+        }
+        let name = lora.path.file_stem().and_then(|n| n.to_str()).ok_or("invalid LoRA filename")?;
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') { return Err("LoRA filenames must contain only letters, numbers, underscores and hyphens".into()); }
+        self.lora = Some(lora);
+        Ok(self)
     }
 
     /// Edits `inputs` as `instruction` asks. The output keeps the first input's aspect
@@ -301,6 +317,12 @@ impl LocalImageBackend {
         let m = &self.model;
         let mut args: Vec<std::ffi::OsString> = vec![];
         let mut prompt = prompt.to_string();
+        if let Some(lora) = &self.lora {
+            if !prompt.contains(&lora.trigger) { prompt = format!("{}, {prompt}", lora.trigger); }
+            let name = lora.path.file_stem().unwrap().to_string_lossy();
+            prompt.push_str(&format!(" <lora:{name}:{}>", lora.strength));
+            args.extend(["--lora-model-dir".into(), lora.path.parent().unwrap().into()]);
+        }
         for file in &m.files {
             let path = m.file_path(file);
             if file.flag == image_models::LORA_FLAG {
@@ -376,7 +398,18 @@ pub fn gpu_bytes_needed(model: &ImageModel) -> u64 {
     } else {
         model.size_bytes()
     };
-    weights + activations
+    let estimated = weights + activations;
+    // Managed graph-cut execution budgets weights AND runner buffers. A large
+    // file-backed Qwen model need not fit its entire transformer in VRAM.
+    let budget = model.extra_args.windows(2).find(|pair| pair[0] == "--max-vram")
+        .and_then(|pair| pair[1].parse::<f64>().ok()).filter(|value| value.is_finite());
+    let cap = match budget {
+        Some(value) if value > 0.0 => Some((value * 1024.0_f64.powi(3)) as u64),
+        Some(value) if value < 0.0 => crate::device::Device::probe().gpu
+            .map(|gpu| gpu.vram_bytes.saturating_sub((-value * 1024.0_f64.powi(3)) as u64)),
+        _ => None,
+    };
+    cap.map_or(estimated, |cap| estimated.min(cap))
 }
 
 pub fn save_image(path: &Path, image: &GeneratedImage) -> Result<std::path::PathBuf, String> {
@@ -425,7 +458,7 @@ mod tests {
     #[test]
     fn local_arguments_pass_each_file_then_settings() {
         let model = image_models::find("chroma1-hd").unwrap();
-        let backend = LocalImageBackend { binary: "sd-cli".into(), model };
+        let backend = LocalImageBackend { binary: "sd-cli".into(), model, lora: None };
         let joined = backend
             .arguments("a lantern", Path::new("/tmp/out.png"), &[], (1024, 1024))
             .iter()
@@ -439,9 +472,24 @@ mod tests {
     }
 
     #[test]
+    fn selected_lora_adds_its_trigger_and_weight_and_rejects_another_base() {
+        let root = std::env::temp_dir().join(format!("forgeflow-lora-args-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("subject.safetensors"); std::fs::write(&path, "test").unwrap();
+        let lora = crate::lora::ActiveLora { path, base_model: "qwen-image".into(), trigger: "ff_subject".into(), strength: 0.8 };
+        let backend = LocalImageBackend { binary: "sd-cli".into(), model: image_models::find("qwen-image").unwrap(), lora: None }.with_lora(lora.clone()).unwrap();
+        let args = backend.arguments("a studio portrait", Path::new("out.png"), &[], (512, 512));
+        let prompt = args.windows(2).find(|p| p[0] == "-p").unwrap()[1].to_string_lossy();
+        assert_eq!(prompt, "ff_subject, a studio portrait <lora:subject:0.8>");
+        let other = LocalImageBackend { binary: "sd-cli".into(), model: image_models::find("z-image-turbo").unwrap(), lora: None };
+        assert!(other.with_lora(lora).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn edit_arguments_load_the_lora_from_its_folder_and_pass_references() {
         let model = image_models::find("qwen-image-edit-2511").unwrap();
-        let backend = LocalImageBackend { binary: "sd-cli".into(), model };
+        let backend = LocalImageBackend { binary: "sd-cli".into(), model, lora: None };
         let args: Vec<String> = backend
             .arguments("add rain", Path::new("/tmp/out.png"), &[PathBuf::from("a.png"), PathBuf::from("b.png")], (1184, 880))
             .iter()
@@ -497,7 +545,7 @@ sleep 0.3
 cp "$source" "$output"
 "#).unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let backend = LocalImageBackend { binary: binary.clone(), model: image_models::find("qwen-image-edit-2511").unwrap() };
+        let backend = LocalImageBackend { binary: binary.clone(), model: image_models::find("qwen-image-edit-2511").unwrap(), lora: None };
         let work = root.join("render");
         let mut previews = Vec::new();
         let mut progress = Vec::new();

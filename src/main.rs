@@ -56,9 +56,7 @@ fn read_source(path: &Path) -> io::Result<Source> {
 
 fn main() -> Result<(), Box<dyn Error>> {
     // A watcher started to stop a child process if this one dies; see `reaper`.
-    if let Some(pid) = std::env::args().nth(2).filter(|_| std::env::args().nth(1).as_deref() == Some(forgeflow::reaper::REAP_ARG)) {
-        forgeflow::reaper::run_watcher(&pid);
-    }
+    forgeflow::reaper::initialize();
     // A picker window, opened in its own process; see `picker`.
     if let Some(spec) = std::env::args().nth(2).filter(|_| std::env::args().nth(1).as_deref() == Some(forgeflow::picker::PICK_ARG)) {
         forgeflow::picker::run_window(&spec);
@@ -96,6 +94,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         ["use", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseModel]),
         ["image"] => run_words(context, vec![Ops::ImageModels]),
         ["image", id] => run_words(context, vec![Ops::StringLiteral(id.to_string()), Ops::UseImage]),
+        ["lora-init", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::LoraInit, Ops::Print]),
+        ["lora-scan", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::LoraScan, Ops::Print]),
+        ["lora-check", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::LoraCheck, Ops::Print]),
+        ["lora-prepare", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::LoraPrepare, Ops::Print]),
+        ["train-lora", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::TrainLora, Ops::Print]),
+        ["lora", folder] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::StringLiteral("1".into()), Ops::UseLora]),
+        ["lora", folder, strength] => run_words(context, vec![Ops::StringLiteral(folder.to_string()), Ops::StringLiteral(strength.to_string()), Ops::UseLora]),
         ["install"] => install(),
         ["serve"] => {
             let port = forgeflow::config::Config::load(&context.project.folder())?.web_port;
@@ -118,6 +123,12 @@ const USAGE: &str = "Usage:
   forgeflow use <id>     select the model
   forgeflow image        show image generation settings and local image models
   forgeflow image <id>   generate images locally with <id>, or `openrouter`
+  forgeflow lora-init <folder>     scaffold images/ and lora.json for local Qwen LoRA training
+  forgeflow lora-scan <folder>     add image filename keys without replacing captions
+  forgeflow lora-check <folder>    validate images, captions and training settings
+  forgeflow lora-prepare <folder>  freeze a training snapshot without starting the trainer
+  forgeflow train-lora <folder>    train locally using the dataset's lora.json
+  forgeflow lora <folder> [strength]  select a trained adapter (or lora off)
   forgeflow install       build llama-server and sd-cli for this machine's GPU
   forgeflow serve [port]  chat in a browser; prints a QR code for phones on the network
                          (port `web_port`, 8090 by default; in chat, `/serve` or `\"start\" serve`)

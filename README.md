@@ -130,6 +130,70 @@ Selections, reference crops, intermediate step images, and completed previews st
 
 For reproducible headless checks, `cargo run --example masked_face_edit -- job.json` uses the same backend, mask, context crop and compositor as the editor. The JSON contains `target`, `reference`, `output` (a review directory), `target_box` and `reference_box` (`[x,y,width,height]`), `resolution`, `seed`, and `settings` (the serialized `FaceEditSettings`). It retains the input crops, mask, raw generated crop, final image, renderer log, and a pixel-preservation report in the review directory. Intermediate step images remain temporary. Test jobs using this session's images are under `.tmp/masked-face-test/`; these local files are not committed.
 
+## Local Qwen LoRA training
+
+CLI commands and words use the same dataset format and implementation. Start with:
+
+```sh
+forgeflow lora-init datasets/subject
+# Put photographs in datasets/subject/images/ (subfolders also work).
+forgeflow lora-scan datasets/subject
+# Fill the filename captions in datasets/subject/lora.json.
+forgeflow lora-check datasets/subject
+forgeflow train-lora datasets/subject
+forgeflow lora datasets/subject 0.8
+```
+
+`lora-init` creates `images/`, `lora.json`, and `README.txt`. It refuses to overwrite an existing manifest. `lora-scan` adds newly found JPEG, PNG, and WebP filenames with empty captions, preserving your existing captions and settings. It never deletes entries for missing images; validation reports them so they can be corrected or removed deliberately. Filename keys are relative to `images/`.
+
+Normal startup is unchanged: start `forgeflow` as usual and use the words in that session or in `.ff` workflows. The CLI aliases are optional conveniences. `train-lora` prepares any missing model components automatically; `use-lora` saves the compatible local model and adapter selection for later sessions. There are no new startup flags. Managed training currently targets Linux with an NVIDIA CUDA GPU.
+
+The generated manifest is a JSON object like this:
+
+```json
+{
+  "version": 1,
+  "name": "subject",
+  "base_model": "qwen-image",
+  "trigger": "ff_subject",
+  "images": {
+    "front.jpg": "a person, front view, neutral expression, daylight",
+    "portraits/side.webp": ["a person", "side view", "studio lighting"]
+  },
+  "training": {
+    "steps": 1000,
+    "rank": 16,
+    "learning_rate": 0.0001,
+    "resolution": 512,
+    "save_every": 100,
+    "seed": 42
+  }
+}
+```
+
+Captions can be strings or arrays of phrase tags. Training joins tag arrays with commas and prepends the trigger if it is absent. Empty captions, missing/unreadable images, escaping paths and invalid settings fail before training. Only listed images are trained on. Describe variable attributes such as clothing, lighting and pose in the captions, and use varied examples of the subject or style you want the trigger to learn.
+
+The corresponding words are:
+
+```forth
+"datasets/subject" lora-init print
+"datasets/subject" lora-scan print
+"datasets/subject" lora-check print
+"datasets/subject" lora-prepare print
+"datasets/subject" train-lora print
+"datasets/subject" "0.8" use-lora
+"art/portrait.png" "a studio portrait" make-image
+"off" "" use-lora
+```
+
+`lora-prepare` validates the dataset and returns a frozen run folder without installing a trainer or starting GPU work. `train-lora` creates a new run under `datasets/subject/runs/`, with normalized image copies, caption files, the exact dataset JSON, trainer configuration, logs and checkpoints. Source photographs are unchanged. Each run is separate; changing captions or images while one is running does not change that run. Failed runs retain their diagnostics. The final weights path is returned, and `adapter.json` in the dataset points to the latest successful result.
+
+Training uses a pinned [AI Toolkit](https://github.com/ostris/ai-toolkit) revision in an isolated Python environment under `~/local-models/ai-toolkit/`. Its Qwen 24 GB recipe uses rank-limited LoRA training, quantization, cached text embeddings, gradient checkpointing and batch size one. On Linux with a user systemd session, the trainer is placed in a separate scope limited to 75% of system RAM and 512 MiB swap. The session's owned chat model is paused when GPU memory is needed; concurrent ForgeFlow training jobs are rejected. Other environments rely on the trainer's memory settings.
+
+This trains **Qwen Image's text-to-image base**, not the Qwen Image Edit model. The existing edit-model GGUF is an inference artifact and cannot be used directly by this trainer. `forgeflow pull qwen-image` downloads a roughly **38 GiB BF16 transformer**; encoders and VAE already used by ForgeFlow are reused for inference. Training additionally downloads roughly **16 GiB** of text-encoder/VAE components and Python dependencies. The generation transformer is shared with training instead of downloaded twice. These are persistent model assets; dataset scaffolding, scanning, validation and preparation do not download them.
+
+`forgeflow lora <dataset> [strength]` / `use-lora` selects the saved adapter and switches local generation to its compatible Qwen base. Its trigger is added to generation prompts automatically. Strength defaults to `1`; `forgeflow lora off` disables it. Switching to an incompatible local image model while an adapter is selected returns an actionable error. The adapter is applied to local text-to-image generation; image editing remains separate.
+
 ## Anime rendering
 
 `anime-style` renders a whole image or every frame of an existing video:

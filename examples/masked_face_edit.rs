@@ -21,6 +21,7 @@ struct Job {
 fn default_lightning() -> bool { true }
 
 fn main() -> Result<(), String> {
+    forgeflow::reaper::initialize();
     let spec = std::env::args().nth(1).ok_or("usage: masked_face_edit job.json")?;
     let job: Job = serde_json::from_slice(&std::fs::read(spec).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let root = std::env::current_dir().map_err(|e| e.to_string())?;

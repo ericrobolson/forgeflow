@@ -102,6 +102,12 @@ pub enum Ops {
     /// Put the face in an image onto a person in a video or image, with FaceFusion.
     SwapFace,
     AnimeStyle,
+    LoraInit,
+    LoraScan,
+    LoraCheck,
+    LoraPrepare,
+    TrainLora,
+    UseLora,
 }
 
 impl Ops {
@@ -155,11 +161,18 @@ impl Ops {
             Ops::CropImage,
             Ops::SwapFace,
             Ops::AnimeStyle,
+            Ops::LoraInit, Ops::LoraScan, Ops::LoraCheck, Ops::LoraPrepare, Ops::TrainLora, Ops::UseLora,
         ]
     }
 
     pub fn name(&self) -> &'static str {
         match self {
+            Ops::LoraInit => "lora-init",
+            Ops::LoraScan => "lora-scan",
+            Ops::LoraCheck => "lora-check",
+            Ops::LoraPrepare => "lora-prepare",
+            Ops::TrainLora => "train-lora",
+            Ops::UseLora => "use-lora",
             Ops::SpecifyAgent(_) => "specify_agent",
             Ops::StringLiteral(_) => "string literal",
             Ops::IntLiteral(_) => "integer literal",
@@ -219,6 +232,12 @@ impl Ops {
 
     pub fn description(&self) -> &'static str {
         match self {
+            Ops::LoraInit => "Scaffold a local Qwen LoRA dataset: images/, lora.json with filename-to-caption entries, and instructions. Refuses to replace an existing manifest.",
+            Ops::LoraScan => "Add new image filename keys to lora.json with empty captions; preserve existing captions, tags and settings.",
+            Ops::LoraCheck => "Validate a Qwen LoRA dataset's image paths, captions, image files and training settings before training.",
+            Ops::LoraPrepare => "Validate and freeze a Qwen LoRA dataset snapshot and trainer configuration without downloading models or running training.",
+            Ops::TrainLora => "Train a subject/style LoRA locally for qwen-image using the dataset's lora.json. Downloads the base model and installs a pinned Python trainer on first use. Saves a new run, logs and weights; returns the final weights path.",
+            Ops::UseLora => "Select a trained dataset's LoRA for local Qwen image generation, with a strength string such as 0.8. Use off to disable it. Does not start training.",
             Ops::ReadFile => "Read a UTF-8 file. The path is relative to the project root.",
             Ops::ListDirectory => {
                 "List a folder relative to the project root; use . for the root. Folders end with / and come first."
@@ -279,6 +298,27 @@ impl Ops {
 
     pub fn process(&self, context: &mut Context) -> Result<(), String> {
         match self {
+            Ops::LoraInit | Ops::LoraScan | Ops::LoraCheck | Ops::LoraPrepare | Ops::TrainLora => {
+                let folder = pop(context)?.expect_string()?;
+                let result = match self {
+                    Ops::LoraInit => crate::lora::init(&context.project, &folder)?,
+                    Ops::LoraScan => crate::lora::scan(&context.project, &folder)?,
+                    Ops::LoraCheck => crate::lora::validate(&context.project, &folder)?,
+                    Ops::LoraPrepare => crate::lora::prepare(&context.project, &folder)?.strip_prefix(&context.project.root).map_err(|_| "snapshot is outside project")?.to_string_lossy().into_owned(),
+                    Ops::TrainLora => with_gpu_bytes(context, "Qwen LoRA training", 22_000_000_000, |context| {
+                        let project = crate::project::Project { root: context.project.root.clone() };
+                        crate::lora::train(&project, &folder, &mut |message| context.progress(message))
+                    })?,
+                    _ => unreachable!(),
+                };
+                context.stack.push(Value::String(result));
+            }
+            Ops::UseLora => {
+                let strength = pop(context)?.expect_string()?;
+                let folder = pop(context)?.expect_string()?;
+                crate::lora::select(&context.project, &folder, &strength)?;
+                context.say(if folder == "off" { "LoRA disabled." } else { "LoRA selected for local Qwen generation." });
+            }
             Ops::AllCliArgs => todo!(),
             Ops::WriteFile => {
                 let contents = pop(context)?.expect_string()?;
@@ -696,6 +736,8 @@ impl Ops {
     pub fn inputs(&self) -> Vec<Type> {
         use TypeKind::*;
         match self {
+            Ops::LoraInit | Ops::LoraScan | Ops::LoraCheck | Ops::LoraPrepare | Ops::TrainLora => vec![Type::str("folder", "dataset folder or lora.json path relative to the project root")],
+            Ops::UseLora => vec![Type::str("folder", "trained dataset folder, or off"), Type::str("strength", "LoRA strength as a string, 0 to 2; e.g. 0.8")],
             Ops::WriteFile => vec![Type::str("path", "file path"), Type::str("contents", "contents")],
             Ops::AskLlm => vec![Type::str("question", "the question to ask")],
             Ops::Print => vec![Type::new("value", Any, "the value to print")],
@@ -797,6 +839,8 @@ impl Ops {
     pub fn outputs(&self) -> Vec<Type> {
         use TypeKind::*;
         match self {
+            Ops::UseLora => vec![],
+            Ops::LoraInit | Ops::LoraScan | Ops::LoraCheck | Ops::LoraPrepare | Ops::TrainLora => vec![Type::str("result", "manifest path, validation/scan report, prepared run folder, or trained weights path")],
             Ops::AllCliArgs => vec![Type::str("args", "the args as a string")],
             Ops::ReadLine => vec![Type::str("line", "A line the user wrote")],
             Ops::AskLlm => vec![Type::str("response", "The response")],

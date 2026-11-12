@@ -22,6 +22,8 @@ pub struct Config {
     pub image_model: String,
     /// An image model ID from `catalog/image_models.json`.
     pub local_image_model: String,
+    /// Optional subject/style adapter for local image generation.
+    pub lora: Option<crate::lora::ActiveLora>,
     /// The local edit model `edit-image` runs, from `catalog/image_models.json`.
     pub local_edit_model: String,
     /// The video model `make-video` runs, from `catalog/image_models.json`.
@@ -46,6 +48,7 @@ impl Default for Config {
             image_backend: ImageBackendKind::OpenRouter,
             image_model: "recraft/recraft-v4.1-flash".into(),
             local_image_model: "z-image-turbo".into(),
+            lora: None,
             local_edit_model: "qwen-image-edit-2511".into(),
             local_video_model: "wan2.2-vace-fun-nsfw".into(),
             video_quality: "draft".into(),
