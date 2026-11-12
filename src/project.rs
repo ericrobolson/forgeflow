@@ -1,6 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 
 const PROJECT_FOLDER: &'static str = "_forgeflow";
+/// Session worlds for RPG mode.
+pub const RPG_FOLDER: &str = "rpg";
 pub const SESSIONS_FOLDER: &str = "sessions";
 /// Cached file summaries, keyed by content hash; see `summary`.
 pub const SUMMARIES_FOLDER: &str = "summaries";
@@ -29,12 +31,19 @@ impl Project {
         ignore_entries(&folder, &IGNORED_FILES)?;
         Self::create_ignored_folder(&project.sessions_folder())?;
         Self::create_ignored_folder(&project.summaries_folder())?;
+        std::fs::create_dir_all(project.rpg_folder())?;
+        ignore_entries(&project.rpg_folder(), &["*/transcripts/", "*/.lock", "*/meta.json.tmp"])?;
         Ok(project)
     }
 
     /// The project's `_forgeflow` folder.
     pub fn folder(&self) -> PathBuf {
         self.root.join(PROJECT_FOLDER)
+    }
+
+    /// The folder containing persistent RPG sessions.
+    pub fn rpg_folder(&self) -> PathBuf {
+        self.folder().join(RPG_FOLDER)
     }
 
     pub fn sessions_folder(&self) -> PathBuf {

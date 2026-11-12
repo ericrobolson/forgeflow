@@ -1,0 +1,12 @@
+{
+  "name": "TrickyThings",
+  "created": "20261112-062121",
+  "turn": 3,
+  "game_time": "1471-03-12T20:15",
+  "current_scene_id": 3,
+  "roles": {
+    "narrator": "local",
+    "archivist": "local",
+    "compel_decider": "rules"
+  }
+}

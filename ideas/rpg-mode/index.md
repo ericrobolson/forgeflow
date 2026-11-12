@@ -1,3 +1,5 @@
+> Implemented; see planner/261111-132135_RpgMode.md for the decisions that refine this design.
+
 # RPG mode
 
 `forgeflow rpg` (and `/rpg` in chat) runs a tabletop-RPG world inside ForgeFlow. A named session owns a SQLite database that is the single source of truth for the world: entities, aspects, skills, stress, relationships, behaviors, scenes, and the fate-point economy. A local model narrates; the player just types what they do. `/rpg serve` opens a phone-clean web UI (QR-scanned) that shows only the story, with one-tap scene images and video.

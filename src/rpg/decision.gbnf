@@ -1,0 +1,5 @@
+root   ::= "{" ws "\"yes\"" ws ":" ws bool ws "," ws "\"confidence\"" ws ":" ws number ws "," ws "\"reason\"" ws ":" ws string ws "}"
+bool   ::= "true" | "false"
+number ::= "0" ("." [0-9]+)? | "1" ("." "0"+)?
+string ::= "\"" [^"\\\n]* "\""
+ws     ::= [ \t\n]*

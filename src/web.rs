@@ -5,37 +5,32 @@
 //! few lines for Enter-to-send and scrolling. Every request but the static assets needs the
 //! session token, which the QR code carries and a cookie then keeps.
 
-use std::io::{Cursor, Read, Write};
-use std::net::{IpAddr, UdpSocket};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex, Weak};
-use std::thread::JoinHandle;
-use std::time::Duration;
+use crate::web_util::{
+    COOKIE, Feed, HTMX, HTMX_SSE, MAX_UPLOAD_BYTES, Part, STYLE, asset, authorized, file_url,
+    header, html_response, markdown, next_path, notice, page_shell, parse_multipart, query_param,
+    respond, save_upload, serve_file, stream_feed, utc_stamp,
+};
+pub use crate::web_util::{UPLOAD_DIR, WEB_DIR, lan_ip, qr_code};
 
-use maud::{DOCTYPE, Markup, html};
-use tiny_http::{Header, Method, Request, Response, Server};
+#[cfg(test)]
+use crate::web_util::{percent_decode,sse_frame,parse_range};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread::JoinHandle;
+
+use maud::{Markup, html};
+use tiny_http::{Method, Request, Response, Server};
 
 use crate::config::Config;
 use crate::events::{Event, Kind, Sink, Terminal};
 use crate::messages::Conversation;
 use crate::workflow::Context;
 
-const HTMX: &str = include_str!("../assets/htmx.min.js");
-const HTMX_SSE: &str = include_str!("../assets/htmx-sse.js");
-const STYLE: &str = include_str!("../assets/style.css");
+
+
+
 const SCRIPT: &str = include_str!("../assets/page.js");
-const COOKIE: &str = "forgeflow_token";
-/// Enough for several phone photos at once, the keyframes of a video.
-const MAX_UPLOAD_BYTES: usize = 160 * 1024 * 1024;
-/// Uploads are scaled down to this longest side; edits work at about a megapixel anyway.
-const MAX_UPLOAD_SIDE: u32 = 2048;
-/// Where the web UI keeps what it creates: uploads, and images generated from the page.
-pub const WEB_DIR: &str = ".tmp";
-pub const UPLOAD_DIR: &str = ".tmp/uploads";
-/// How often an idle stream sends a comment, so proxies and phones keep it open.
-const KEEPALIVE: Duration = Duration::from_secs(15);
-/// The shortest gap between updates of a streaming reply.
-const UPDATE_INTERVAL: Duration = Duration::from_millis(60);
 
 /// One message and everything the conversation emitted for it.
 struct Turn {
@@ -44,33 +39,19 @@ struct Turn {
     mode: Mode,
     /// Photos attached to the message, in order.
     uploads: Vec<String>,
-    state: Mutex<TurnState>,
-    changed: Condvar,
+    feed: Arc<Feed>,
 }
 
-#[derive(Default)]
-struct TurnState {
-    events: Vec<Event>,
-    done: bool,
-}
 
 impl Turn {
     fn new(id: usize, message: String, mode: Mode, uploads: Vec<String>) -> Self {
-        Self { id, message, mode, uploads, state: Mutex::default(), changed: Condvar::new() }
+        Self { id, message, mode, uploads, feed: Arc::default() }
     }
 
-    fn push(&self, event: Event) {
-        self.state.lock().expect("turn lock").events.push(event);
-        self.changed.notify_all();
-    }
 
-    fn finish(&self) {
-        self.state.lock().expect("turn lock").done = true;
-        self.changed.notify_all();
-    }
 }
 
-type Current = Arc<Mutex<Option<Arc<Turn>>>>;
+type Current = Arc<Mutex<Option<Arc<Feed>>>>;
 
 /// Sends events to the web turn being run, if any, and otherwise to the terminal. With
 /// `mirror`, web turns are shown in the terminal too, as `forgeflow serve`'s log; in the
@@ -134,6 +115,7 @@ impl WebControl {
         let lan = lan_ip().map(|ip| format!("http://{ip}:{port}/?t={token}"));
         let local = format!("http://localhost:{port}/?t={token}");
         let app = Arc::new(App {
+            media: crate::rpg::web::media_for_chat(self.conversation.clone(), self.current.clone(), root),
             conversation: self.conversation.clone(),
             current: self.current.clone(),
             turns: Mutex::default(),
@@ -192,6 +174,7 @@ impl Drop for Running {
 }
 
 struct App {
+    media: crate::rpg::web::App,
     /// Weak, so the conversation (and its llama-server) is dropped when its owner exits.
     conversation: Weak<Mutex<Conversation>>,
     current: Current,
@@ -216,27 +199,6 @@ pub fn serve(context: Context, port: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// The address other devices on the network reach this machine at: the source address the
-/// system would use for outside traffic. Connecting a UDP socket sends nothing.
-pub fn lan_ip() -> Option<IpAddr> {
-    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("192.0.2.1:80").ok()?;
-    let ip = socket.local_addr().ok()?.ip();
-    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
-}
-
-/// `text` as a QR code drawn with half blocks, two rows per line, light on dark so it
-/// scans from a dark terminal.
-pub fn qr_code(text: &str) -> Result<String, String> {
-    use qrcode::render::unicode::Dense1x2;
-    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| format!("could not make a QR code: {e}"))?;
-    Ok(code
-        .render::<Dense1x2>()
-        .dark_color(Dense1x2::Light)
-        .light_color(Dense1x2::Dark)
-        .quiet_zone(true)
-        .build())
-}
 
 fn handle(app: &App, request: Request) {
     let url = request.url().to_string();
@@ -246,6 +208,8 @@ fn handle(app: &App, request: Request) {
     let result = match (&method, path.as_str()) {
         (Method::Get, "/assets/htmx.js") => respond(request, asset(HTMX, "text/javascript")),
         (Method::Get, "/assets/sse.js") => respond(request, asset(HTMX_SSE, "text/javascript")),
+        (Method::Get, "/assets/media.js") => respond(request, asset(include_str!("../assets/media.js"), "text/javascript")),
+        (Method::Get, "/assets/media.css") => respond(request, asset(include_str!("../assets/media.css"), "text/css")),
         (Method::Get, "/assets/page.js") => respond(request, asset(SCRIPT, "text/javascript")),
         (Method::Get, "/assets/style.css") => respond(request, asset(STYLE, "text/css")),
         (Method::Get, "/") if query_param(query, "t") == Some(app.token.as_str()) => {
@@ -253,15 +217,17 @@ fn handle(app: &App, request: Request) {
             let cookie = format!("{COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", app.token);
             respond(request, Response::from_string("").with_status_code(303).with_header(header("Location", "/")).with_header(header("Set-Cookie", &cookie)))
         }
-        _ if !authorized(app, &request) => respond(
+        _ if !authorized(&app.token, &request) => respond(
             request,
             html_response(page_shell(html! { main.locked { p { "Scan the QR code in the terminal running " code { "forgeflow serve" } " to open this session." } } }))
                 .with_status_code(403),
         ),
+        _ if path == "/roleplay" || path.starts_with("/roleplay/") => crate::rpg::web::handle_roleplay(&app.media, request, &path, &app.token),
+        _ if path == "/media" || path.starts_with("/media/") => crate::rpg::web::handle_media(&app.media, request, &path),
         (Method::Get, "/") => respond(request, html_response(page(app))),
         (Method::Post, "/send") => send(app, request),
         (Method::Get, p) if p.starts_with("/stream/") => stream(app, request, &p["/stream/".len()..]),
-        (Method::Get, p) if p.starts_with("/files/") => file(app, request, &p["/files/".len()..]),
+        (Method::Get, p) if p.starts_with("/files/") => serve_file(&app.root, request, &p["/files/".len()..]),
         _ => respond(request, Response::from_string("not found").with_status_code(404)),
     };
     if let Err(error) = result {
@@ -269,62 +235,15 @@ fn handle(app: &App, request: Request) {
     }
 }
 
-fn respond<R: Read>(request: Request, response: Response<R>) -> Result<(), String> {
-    request.respond(response).map_err(|e| e.to_string())
-}
-
-fn header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("valid header")
-}
-
-fn asset(body: &'static str, content_type: &str) -> Response<Cursor<Vec<u8>>> {
-    Response::from_string(body)
-        .with_header(header("Content-Type", &format!("{content_type}; charset=utf-8")))
-        .with_header(header("Cache-Control", "max-age=3600"))
-}
-
-fn html_response(markup: Markup) -> Response<Cursor<Vec<u8>>> {
-    Response::from_string(markup.into_string()).with_header(header("Content-Type", "text/html; charset=utf-8"))
-}
-
-fn authorized(app: &App, request: &Request) -> bool {
-    request
-        .headers()
-        .iter()
-        .filter(|h| h.field.equiv("Cookie"))
-        .flat_map(|h| h.value.as_str().split(';'))
-        .filter_map(|pair| pair.trim().split_once('='))
-        .any(|(name, value)| name == COOKIE && value == app.token)
-}
-
-fn query_param<'a>(query: &'a str, name: &str) -> Option<&'a str> {
-    query.split('&').filter_map(|pair| pair.split_once('=')).find(|(key, _)| *key == name).map(|(_, value)| value)
-}
-
-fn page_shell(body: Markup) -> Markup {
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover";
-                meta name="color-scheme" content="light dark";
-                title { "ForgeFlow" }
-                link rel="stylesheet" href="/assets/style.css";
-                script src="/assets/htmx.js" {}
-                script src="/assets/sse.js" {}
-            }
-            body { (body) }
-        }
-    }
-}
 
 fn page(app: &App) -> Markup {
     let config = Config::load(&crate::project::Project { root: app.root.clone() }.folder()).unwrap_or_default();
     let model = config.model.unwrap_or_else(|| "no model".into());
     let turns = app.turns.lock().expect("turns lock").clone();
     page_shell(html! {
+        link rel="stylesheet" href=(crate::web_util::asset_url("/assets/media.css", include_str!("../assets/media.css")));
         header.bar {
+            (crate::rpg::web::media_menu())
             span.brand { "ForgeFlow" }
             span.model { (model) }
             button.clear type="button" title="Clear the conversation and stack"
@@ -368,7 +287,7 @@ fn page(app: &App) -> Markup {
 
 /// A turn: the user's message, then the reply, finished or still streaming.
 fn turn_markup(turn: &Turn) -> Markup {
-    let state = turn.state.lock().expect("turn lock");
+    let state = turn.feed.snapshot();
     html! {
         div.turn {
             div class=(format!("msg user mode-{}", turn.mode.name())) {
@@ -431,38 +350,6 @@ fn is_step(event: &Event) -> bool {
     matches!(event, Event::Line(Kind::Progress, text) if text.contains("step "))
 }
 
-/// Model-written Markdown as HTML. Raw HTML in it is shown as text, links only keep web
-/// and relative addresses, and images become links, so a reply cannot run script or
-/// load content from elsewhere.
-fn markdown(text: &str) -> String {
-    use pulldown_cmark::{Event as Md, Options, Parser, Tag, TagEnd};
-    let safe = |url: &str| {
-        let lower = url.trim().to_ascii_lowercase();
-        lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with('/') || lower.starts_with('#') || !lower.contains(':')
-    };
-    let mut in_image = false;
-    let events = Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS)
-        .filter_map(|event| match event {
-            Md::Html(raw) | Md::InlineHtml(raw) => Some(Md::Text(raw)),
-            Md::Start(Tag::Image { dest_url, .. }) => {
-                in_image = true;
-                Some(Md::Text(format!("[image: {dest_url}]").into()))
-            }
-            Md::End(TagEnd::Image) => {
-                in_image = false;
-                None
-            }
-            _ if in_image => None,
-            Md::Start(Tag::Link { link_type, dest_url, title, id }) => {
-                let dest_url = if safe(&dest_url) { dest_url } else { "#".into() };
-                Some(Md::Start(Tag::Link { link_type, dest_url, title, id }))
-            }
-            other => Some(other),
-        });
-    let mut html = String::new();
-    pulldown_cmark::html::push_html(&mut html, events);
-    html
-}
 
 fn event_markup(event: &Event) -> Markup {
     match event {
@@ -494,34 +381,6 @@ fn event_markup(event: &Event) -> Markup {
     }
 }
 
-fn file_url(relative: &str) -> String {
-    let encoded: String = relative
-        .bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect();
-    format!("/files/{encoded}")
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 /// Starts a turn from the posted form and answers with its markup; the reply streams in.
 fn send(app: &App, mut request: Request) -> Result<(), String> {
@@ -571,7 +430,7 @@ fn send(app: &App, mut request: Request) -> Result<(), String> {
         turns.push(turn.clone());
         turn
     };
-    *app.current.lock().expect("current turn lock") = Some(turn.clone());
+    *app.current.lock().expect("current turn lock") = Some(turn.feed.clone());
     let markup = turn_markup(&turn);
     let program = turn_program(&message, mode, &uploads, quality.as_deref(), seconds, &app.root);
     // The turn runs on this request's thread after the response is sent, so the page
@@ -580,11 +439,11 @@ fn send(app: &App, mut request: Request) -> Result<(), String> {
     reply(request, markup)?;
     match (program, app.conversation.upgrade()) {
         (Some(text), Some(conversation)) => conversation.lock().expect("conversation lock").turn(&text),
-        (Some(_), None) => turn.push(Event::Line(Kind::Error, "the session has ended".into())),
-        (None, _) => turn.push(Event::Line(Kind::Note, format!("Saved {}. Mention it in a message to use it.", uploads.join(", ")))),
+        (Some(_), None) => turn.feed.push(Event::Line(Kind::Error, "the session has ended".into())),
+        (None, _) => turn.feed.push(Event::Line(Kind::Note, format!("Saved {}. Mention it in a message to use it.", uploads.join(", ")))),
     }
     *app.current.lock().expect("current turn lock") = None;
-    turn.finish();
+    turn.feed.finish();
     Ok(())
 }
 
@@ -665,28 +524,6 @@ fn timestamped_path(root: &Path, name: &str, extension: &str) -> String {
         .expect("a free name")
 }
 
-/// Seconds since 1970 as `YYYYMMDD-HHMMSS` in UTC (civil-from-days, Howard Hinnant's method).
-fn utc_stamp(secs: u64) -> String {
-    let (days, rest) = (secs / 86_400, secs % 86_400);
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}", rest / 3600, rest % 3600 / 60, rest % 60)
-}
-
-/// `.tmp/NAME-N.EXT` with the first N not taken.
-fn next_path(root: &Path, name: &str, extension: &str) -> String {
-    (1..)
-        .map(|n| format!("{WEB_DIR}/{name}-{n}.{extension}"))
-        .find(|path| !root.join(path).exists())
-        .expect("a free name")
-}
 
 /// `text` as a ForgeFlow string literal.
 fn quote(text: &str) -> String {
@@ -694,79 +531,7 @@ fn quote(text: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-fn notice(text: &str) -> Markup {
-    html! { div.turn { div.msg.bot { div.line.k-error { (text) } } } }
-}
 
-struct Part {
-    name: String,
-    data: Vec<u8>,
-}
-
-/// The named parts of a `multipart/form-data` body.
-fn parse_multipart(body: &[u8], boundary: &str) -> Vec<Part> {
-    let delimiter = format!("--{boundary}").into_bytes();
-    let mut parts = vec![];
-    let mut sections = split_bytes(body, &delimiter).into_iter().skip(1);
-    for section in sections.by_ref() {
-        // The closing delimiter is followed by `--`.
-        if section.starts_with(b"--") {
-            break;
-        }
-        let section = section.strip_prefix(b"\r\n").unwrap_or(section);
-        let Some(split) = find(section, b"\r\n\r\n") else { continue };
-        let headers = String::from_utf8_lossy(&section[..split]);
-        let data = &section[split + 4..];
-        let data = data.strip_suffix(b"\r\n").unwrap_or(data);
-        let name = headers
-            .lines()
-            .find(|l| l.to_ascii_lowercase().starts_with("content-disposition"))
-            .and_then(|l| l.split(';').map(str::trim).find_map(|p| p.strip_prefix("name=")))
-            .map(|n| n.trim_matches('"').to_string());
-        if let Some(name) = name {
-            parts.push(Part { name, data: data.to_vec() });
-        }
-    }
-    parts
-}
-
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-fn split_bytes<'a>(mut body: &'a [u8], delimiter: &[u8]) -> Vec<&'a [u8]> {
-    let mut out = vec![];
-    while let Some(at) = find(body, delimiter) {
-        out.push(&body[..at]);
-        body = &body[at + delimiter.len()..];
-    }
-    out.push(body);
-    out
-}
-
-/// Saves an uploaded photo as `.tmp/uploads/photo-N.png`: upright (phones record rotation
-/// separately), at most `MAX_UPLOAD_SIDE` on its longest side, and as PNG, which every
-/// local model reads. Returns its project-relative path.
-fn save_upload(root: &Path, bytes: &[u8]) -> Result<String, String> {
-    use image::ImageDecoder;
-    let unreadable = |e: image::ImageError| format!("could not read that image ({e}); try a JPEG or PNG");
-    let mut decoder = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?
-        .into_decoder()
-        .map_err(unreadable)?;
-    let orientation = decoder.orientation().map_err(unreadable)?;
-    let mut picture = image::DynamicImage::from_decoder(decoder).map_err(unreadable)?;
-    picture.apply_orientation(orientation);
-    if picture.width().max(picture.height()) > MAX_UPLOAD_SIDE {
-        picture = picture.resize(MAX_UPLOAD_SIDE, MAX_UPLOAD_SIDE, image::imageops::FilterType::Lanczos3);
-    }
-    let dir = root.join(UPLOAD_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let name = (1..).map(|n| format!("photo-{n}.png")).find(|name| !dir.join(name).exists()).expect("a free name");
-    picture.save(dir.join(&name)).map_err(|e| format!("could not save the upload: {e}"))?;
-    Ok(format!("{UPLOAD_DIR}/{name}"))
-}
 
 /// Streams a turn as server-sent events, each carrying the whole reply so far, resuming after `Last-Event-ID` when the
 /// browser reconnects, and ends with `done`.
@@ -775,138 +540,9 @@ fn stream(app: &App, request: Request, id: &str) -> Result<(), String> {
     let Some(turn) = turn else {
         return respond(request, Response::from_string("no such turn").with_status_code(404));
     };
-    let mut next = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Last-Event-ID"))
-        .and_then(|h| h.value.as_str().parse::<usize>().ok())
-        // Each update's id is how many events it shows, so resume after that many.
-        .unwrap_or(0);
-    // tiny_http buffers chunked bodies, so write the stream directly and flush each event.
-    let mut out = request.into_writer();
-    out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n")
-        .map_err(|e| e.to_string())?;
-    loop {
-        // Read the events and the done flag together, so `finished` means the last update
-        // holds every event.
-        let (events, finished) = {
-            let mut state = turn.state.lock().expect("turn lock");
-            if next >= state.events.len() && !state.done {
-                state = turn.changed.wait_timeout(state, KEEPALIVE).expect("turn lock").0;
-                // Let a burst of tokens gather, so each update re-renders the reply once.
-                if !state.done {
-                    drop(state);
-                    std::thread::sleep(UPDATE_INTERVAL);
-                    state = turn.state.lock().expect("turn lock");
-                }
-            }
-            (state.events.clone(), state.done)
-        };
-        let mut chunk = String::new();
-        if events.len() > next || (finished && next == 0) {
-            next = events.len();
-            chunk.push_str(&sse_frame(Some(next), "reply", &render_events(&events).into_string()));
-        } else if !finished {
-            chunk.push_str(": keepalive\n\n");
-        }
-        if finished {
-            chunk.push_str(&sse_frame(None, "done", "done"));
-        }
-        // A failed write means the page closed; the turn keeps running regardless.
-        if out.write_all(chunk.as_bytes()).and_then(|()| out.flush()).is_err() || finished {
-            return Ok(());
-        }
-    }
+    stream_feed(request, &turn.feed, &render_events)
 }
 
-/// One server-sent event; each line of `data` gets its own `data:` field.
-fn sse_frame(id: Option<usize>, event: &str, data: &str) -> String {
-    let mut frame = String::new();
-    if let Some(id) = id {
-        frame.push_str(&format!("id: {id}\n"));
-    }
-    frame.push_str(&format!("event: {event}\n"));
-    for line in data.split('\n') {
-        frame.push_str("data: ");
-        frame.push_str(line);
-        frame.push('\n');
-    }
-    frame.push('\n');
-    frame
-}
-
-/// Serves an image or video from the project; other files stay private. Byte ranges are
-/// supported, as phones require them to play video.
-fn file(app: &App, request: Request, encoded: &str) -> Result<(), String> {
-    let relative = percent_decode(encoded);
-    let content_type = match Path::new(&relative).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("webp") => "image/webp",
-        Some("mp4") => "video/mp4",
-        Some("webm") => "video/webm",
-        Some("mov") => "video/quicktime",
-        Some("mkv") => "video/x-matroska",
-        _ => return respond(request, Response::from_string("only images and videos are served").with_status_code(403)),
-    };
-    let project = crate::project::Project { root: app.root.clone() };
-    let path = match project.resolve(&relative) {
-        Ok(path) if path.is_file() => path,
-        _ => return respond(request, Response::from_string("not found").with_status_code(404)),
-    };
-    let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
-    let length = file.metadata().map_err(|e| e.to_string())?.len();
-    let range = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Range"))
-        .and_then(|h| parse_range(h.value.as_str(), length));
-    let Some((start, end)) = range else {
-        return respond(
-            request,
-            Response::from_file(file)
-                .with_header(header("Content-Type", content_type))
-                .with_header(header("Accept-Ranges", "bytes"))
-                .with_header(header("Cache-Control", "no-cache")),
-        );
-    };
-    use std::io::Seek;
-    file.seek(std::io::SeekFrom::Start(start)).map_err(|e| e.to_string())?;
-    let size = end - start + 1;
-    respond(
-        request,
-        Response::new(
-            tiny_http::StatusCode(206),
-            vec![
-                header("Content-Type", content_type),
-                header("Accept-Ranges", "bytes"),
-                header("Content-Range", &format!("bytes {start}-{end}/{length}")),
-                header("Cache-Control", "no-cache"),
-            ],
-            file.take(size),
-            Some(size as usize),
-            None,
-        ),
-    )
-}
-
-/// A single `bytes=` range within a file of `length` bytes, as inclusive (start, end).
-fn parse_range(value: &str, length: u64) -> Option<(u64, u64)> {
-    let spec = value.trim().strip_prefix("bytes=")?;
-    if spec.contains(',') || length == 0 {
-        return None;
-    }
-    let (start, end) = spec.split_once('-')?;
-    let (start, end) = match (start.trim(), end.trim()) {
-        ("", suffix) => {
-            let suffix: u64 = suffix.parse().ok()?;
-            (length.saturating_sub(suffix), length - 1)
-        }
-        (start, "") => (start.parse().ok()?, length - 1),
-        (start, end) => (start.parse().ok()?, end.parse::<u64>().ok()?.min(length - 1)),
-    };
-    (start <= end && start < length).then_some((start, end))
-}
 
 #[cfg(test)]
 mod tests {

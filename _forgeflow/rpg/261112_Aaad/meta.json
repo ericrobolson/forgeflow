@@ -1,0 +1,12 @@
+{
+  "name": "Aaad",
+  "created": "20261112-154102",
+  "turn": 1,
+  "game_time": "1471-03-12T20:00",
+  "current_scene_id": null,
+  "roles": {
+    "narrator": "local",
+    "archivist": "local",
+    "compel_decider": "rules"
+  }
+}

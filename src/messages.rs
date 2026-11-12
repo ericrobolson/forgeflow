@@ -134,6 +134,8 @@ impl Conversation {
         let words: Vec<&str> = message.split_whitespace().collect();
         let result = match words.as_slice() {
             // The rest of the line is the path, so paths may contain spaces.
+            ["/rpg"] if !self.interactive => Err("/rpg needs the terminal; it is not available here".into()),
+            ["/rpg"] => crate::rpg::run(&mut self.context),
             ["/edit", ..] if !self.interactive => Err("/edit needs the terminal; it is not available here".into()),
             ["/edit", _, ..] => crate::editor::run(&mut self.context, message.trim_start_matches("/edit")),
             ["/edit"] => Err("usage: /edit <path>".into()),
@@ -171,7 +173,7 @@ impl Conversation {
             ["/serve"] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral("start".into()), Ops::Serve]),
             ["/serve", action] => workflow::run_steps(&mut self.context, &[Ops::StringLiteral(action.to_string()), Ops::Serve]),
             _ => Err(format!(
-                "unknown command `{message}`; try /edit <path>, /clear, /reload, /model, /model <id>, /models, /image, /image <id>, /pull <id>, /serve, /serve stop, or /help"
+                "unknown command `{message}`; try /rpg, /edit <path>, /clear, /reload, /model, /model <id>, /models, /image, /image <id>, /pull <id>, /serve, /serve stop, or /help"
             )),
         };
         if let Err(error) = result {

@@ -1105,6 +1105,11 @@ const FACE_MIN_SIDE: u32 = 512;
 /// peak for a 1080p video with the 512 px swap, plus a margin.
 const FACEFUSION_GPU_BYTES: u64 = 7_000_000_000;
 
+/// Runs phone face operations with the same GPU pause/resume policy as the native workflow.
+pub(crate) fn with_facefusion_gpu<T>(context: &mut Context, run: impl FnOnce(&mut Context) -> Result<T, String>) -> Result<T, String> {
+    with_gpu_bytes(context, "FaceFusion", FACEFUSION_GPU_BYTES, run)
+}
+
 /// `swap-face`: finds the faces in `target` (a video or image); if more than one person
 /// appears, asks which to replace (on the frame showing the most faces, with each outlined)
 /// and sets the match distance so nobody else is changed; then swaps and saves. The `face`
@@ -1305,7 +1310,7 @@ fn manual_face_edit(context: &mut Context, target: &std::path::Path, reference: 
 
 /// Re-encodes a video as a high-quality H.264 `.mp4`, keeping its audio, on the NVIDIA
 /// encoder when there is one.
-fn to_mp4(video: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
+pub(crate) fn to_mp4(video: &std::path::Path, output: &std::path::Path) -> Result<(), String> {
     let encode = |codec: &[&str]| {
         std::process::Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
@@ -1324,7 +1329,7 @@ fn to_mp4(video: &std::path::Path, output: &std::path::Path) -> Result<(), Strin
 }
 
 /// Saves frame `number` of `video` (counting from 0, as FaceFusion does) as an image.
-fn extract_frame(video: &std::path::Path, number: u64, output: &std::path::Path) -> Result<(), String> {
+pub(crate) fn extract_frame(video: &std::path::Path, number: u64, output: &std::path::Path) -> Result<(), String> {
     let result = std::process::Command::new("ffmpeg")
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(video)

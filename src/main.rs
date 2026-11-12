@@ -108,6 +108,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         ["serve", port] => serve(context, port.parse().map_err(|_| format!("`{port}` is not a port number"))?),
         ["edit", path] => Ok(forgeflow::editor::run(&mut context, path)?),
+        ["rpg"] => Ok(forgeflow::rpg::run(&mut with_words(context)?)?),
+        ["rpg", "serve"] => {
+            let port = forgeflow::config::Config::load(&context.project.folder())?.web_port;
+            Ok(forgeflow::rpg::serve(&mut with_words(context)?, port)?)
+        }
+        ["rpg", "serve", port] => Ok(forgeflow::rpg::serve(
+            &mut with_words(context)?,
+            port.parse().map_err(|_| format!("`{port}` is not a port number"))?,
+        )?),
+        ["rpg", "rebuild-echo", dir] => Ok(forgeflow::rpg::rebuild_echo(&mut with_words(context)?, dir)?),
         [path] if !path.starts_with('-') && *path != "help" => run_file(Path::new(path), context),
         _ => {
             eprintln!("{USAGE}");
@@ -132,8 +142,16 @@ const USAGE: &str = "Usage:
   forgeflow install       build llama-server and sd-cli for this machine's GPU
   forgeflow serve [port]  chat in a browser; prints a QR code for phones on the network
                          (port `web_port`, 8090 by default; in chat, `/serve` or `\"start\" serve`)
+  forgeflow rpg          play a tabletop RPG session (narrated by the selected model)
+  forgeflow rpg serve [port]   play the RPG session in a phone browser
+  forgeflow rpg rebuild-echo <session>   rewrite a session's events.jsonl from its world.db
   forgeflow edit <path>  edit a file beside its summary
   forgeflow <file.ff>    run a ForgeFlow program";
+
+fn with_words(mut context: Context) -> Result<Context, String> {
+    context.user_words = forgeflow::user_words::load(&context.project)?;
+    Ok(context)
+}
 
 fn serve(mut context: Context, port: u16) -> Result<(), Box<dyn Error>> {
     context.user_words = forgeflow::user_words::load(&context.project)?;

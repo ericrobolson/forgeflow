@@ -106,6 +106,32 @@ Summaries are cached in `_forgeflow/summaries/` (ignored by git), keyed by a SHA
 
 The `summarize` word returns the same summary as text, so `; summarize src/chat.rs` works in chat, and the agent can call it as a tool to read a summary instead of a whole file.
 
+## RPG mode
+
+A Fate-style tabletop game with a local narrator, temporal world facts in bundled SQLite, a terminal GM view, and a narration-only phone UI. Select a model with native tool calls first.
+
+Run `forgeflow rpg` (or `/rpg` in chat), then create a blank world or load the Crown of Ashes sample. On the phone, the **Roleplay** header button opens these same create/resume options without leaving the server. Opening a session starts its phone UI and displays a QR code automatically. Reopening also replays the saved scene and last committed narration without calling a model. `forgeflow rpg serve [port]` runs the phone UI alone. Scene buttons generate images or video with the configured media backends. `forgeflow rpg rebuild-echo <session>` rewrites the world echo.
+
+The phone's always-visible **Media** button (in both chat and RPG mode) shows a paged board of images, MP4s, and WebMs anywhere below the project's `.tmp/` folder, including uploads and generated results. Filter images/videos locally, navigate with numbered pages, a page-number jump, First/Last and Skip 2 controls, tap an image for a full-screen viewer, or select and reorder files to combine them into an MP4. Stills default to 3 seconds each (adjustable); video audio is preserved in the output while previews autoplay muted.
+
+**Menu → Face swap** lets you explicitly choose a source image and target image/video, draw a box around the source face, and tap the detected target face to replace. The work runs on the server with progress and saves the result in `.tmp/`; it never opens a desktop picker. Targets without detectable faces report an error so you can select another file.
+
+Sessions live in `_forgeflow/rpg/<YYMMDD>_<Name>/`: commit `world.db`, `meta.json`, `events.jsonl`, `world.vacuum`, and any `world_words.ff`. `transcripts/`, `.lock`, and `meta.json.tmp` are local and ignored. The session locks out other processes, checks integrity on resume, and makes backups on close and every 10 turns.
+
+| In-session command | Purpose |
+|---|---|
+| `/scene` | Show the current scene and present characters |
+| `/aspects <entity>` | Show current aspects by entity name or id |
+| `/history <aspect id>` | Show every version of an aspect |
+| `/as-of <YYYY-MM-DDTHH:MM>` | Read the world at a past time |
+| `/serve [port]`, `/serve stop` | Start or stop the phone UI |
+| `/debug on`, `/debug off` | Show or hide tool commands and GM details (hidden by default) |
+| `/back`, `/quit` | Close the session and return to the menu or leave RPG mode |
+
+`meta.json` has `roles`: `narrator` and `archivist` default to `local`, and `compel_decider` defaults to `rules`. Generators accept `local` or `local:<id>` (the selected model); the decider also accepts `rules` or `jev:<url>` (`JEV_API_KEY` supplies an optional bearer token).
+
+Override narrator, archivist, and decision prompts in `_forgeflow/rpg/prompts/narrator.md`, `archivist.md`, and `compel.md`. Per-session words in `_forgeflow/rpg/<session>/world_words.ff` are loaded with other project words and offered to the narrator.
+
 ## Agent loop
 
 The `agent` word (available in `.ff` programs) starts llama-server for the selected model (reusing one already serving it) and runs the loop in ForgeFlow itself. The model's tools are ForgeFlow words, with schemas generated from each word's typed inputs: `read_file`, `list_directory`, `summarize`, `reg_view`, `reg_search`, `reg_edit`, `reg_store`, and `emit`. File words are confined to the project root.

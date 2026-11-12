@@ -29,7 +29,14 @@ pub fn run(context: &mut Context, task: &str) -> Result<String, String> {
     let (backend, config) = chat::connect(context)?;
     let mut stdout = std::io::stdout();
     let styled = stdout.is_terminal();
-    let result = run_with(context, &backend, task, config.max_steps, &mut stdout, styled);
+    let result = run_with(
+        context,
+        &backend,
+        task,
+        config.max_steps,
+        &mut stdout,
+        styled,
+    );
     stdout.flush().ok();
     result
 }
@@ -71,80 +78,147 @@ pub fn run_with(
         json!({"role": "system", "content": system_prompt(context)}),
         json!({"role": "user", "content": task}),
     ];
-    let mut failures: HashMap<(String, String), usize> = HashMap::new();
     let mut image_generation_calls = 0usize;
-    let result = (|| {
-        for _ in 0..max_steps {
-            let request = with_register_table(&messages, &context.registers.table());
-            let mut thinking_shown = false;
-            let mut wrote_text = false;
-            let turn = backend.step(&request, &schemas, &StepOptions::default(), &mut |delta| match delta {
-                Delta::Text(text) => {
-                    wrote_text = true;
-                    write!(out, "{text}").ok();
-                    out.flush().ok();
-                }
-                Delta::Reasoning(_) if !thinking_shown => {
-                    thinking_shown = true;
-                    writeln!(out, "{}", dim("(thinking…)")).ok();
-                    out.flush().ok();
-                }
-                Delta::Reasoning(_) => {}
-            })?;
-            if wrote_text {
-                writeln!(out).ok();
+    let mut thinking_shown = false;
+    let mut wrote_text = false;
+    let result = run_loop(
+        context,
+        backend,
+        &mut messages,
+        &schemas,
+        max_steps,
+        &mut |context, name, arguments| {
+            let makes_image = name == "make-image" || name == "edit-image";
+            if makes_image && image_generation_calls >= 1 {
+                return tools::ToolOutcome {
+                    content: "error: this agent run can generate at most one image".into(),
+                    is_error: true,
+                };
             }
+            if makes_image {
+                image_generation_calls += 1;
+            }
+            tools::execute(context, name, arguments)
+        },
+        &mut |_, event| match event {
+            LoopEvent::Text(text) => {
+                wrote_text = true;
+                write!(out, "{text}").ok();
+                out.flush().ok();
+            }
+            LoopEvent::Thinking if !thinking_shown => {
+                thinking_shown = true;
+                writeln!(out, "{}", dim("(thinking…)")).ok();
+                out.flush().ok();
+            }
+            LoopEvent::Thinking => {}
+            LoopEvent::StepDone => {
+                if wrote_text {
+                    writeln!(out).ok();
+                }
+                wrote_text = false;
+                thinking_shown = false;
+            }
+            LoopEvent::Tool {
+                name,
+                arguments,
+                outcome,
+            } => {
+                writeln!(
+                    out,
+                    "{}",
+                    dim(&format!(
+                        "⚙ {name} {arguments} {}",
+                        first_line(&outcome.content)
+                    ))
+                )
+                .ok();
+            }
+        },
+    );
+    save_session(context, task, &messages);
+    result
+}
 
-            let mut assistant = json!({"role": "assistant", "content": turn.content});
-            if turn.tool_calls.is_empty() {
-                messages.push(assistant);
-                return Ok(turn.content);
-            }
-            assistant["tool_calls"] = json!(
+/// Progress emitted by the shared model tool loop.
+pub enum LoopEvent<'a> {
+    Text(&'a str),
+    Thinking,
+    StepDone,
+    Tool {
+        name: &'a str,
+        arguments: &'a str,
+        outcome: &'a tools::ToolOutcome,
+    },
+}
+/// Runs model steps and tool calls until the model produces a final answer.
+pub fn run_loop(
+    context: &mut Context,
+    backend: &dyn ChatBackend,
+    messages: &mut Vec<Json>,
+    schemas: &[Json],
+    max_steps: usize,
+    execute: &mut dyn FnMut(&mut Context, &str, &str) -> tools::ToolOutcome,
+    on_event: &mut dyn FnMut(&mut Context, LoopEvent),
+) -> Result<String, String> {
+    let mut failures: HashMap<(String, String), usize> = HashMap::new();
+    for _ in 0..max_steps {
+        let request = with_register_table(&messages, &context.registers.table());
+        let turn =
+            backend.step(
+                &request,
+                schemas,
+                &StepOptions::default(),
+                &mut |delta| match delta {
+                    Delta::Text(text) => on_event(context, LoopEvent::Text(&text)),
+                    Delta::Reasoning(_) => on_event(context, LoopEvent::Thinking),
+                },
+            )?;
+        on_event(context, LoopEvent::StepDone);
+
+        let mut assistant = json!({"role": "assistant", "content": turn.content});
+        if turn.tool_calls.is_empty() {
+            messages.push(assistant);
+            return Ok(turn.content);
+        }
+        assistant["tool_calls"] = json!(
                 turn.tool_calls
                     .iter()
                     .map(|c| json!({"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}))
                     .collect::<Vec<_>>()
             );
-            messages.push(assistant);
+        messages.push(assistant);
 
-            for call in &turn.tool_calls {
-                let makes_image = call.name == "make-image" || call.name == "edit-image";
-                let outcome = if makes_image && image_generation_calls >= 1 {
-                    tools::ToolOutcome {
-                        content: "error: this agent run can generate at most one image".into(),
-                        is_error: true,
-                    }
-                } else {
-                    if makes_image {
-                        image_generation_calls += 1;
-                    }
-                    tools::execute(context, &call.name, &call.arguments)
-                };
-                let line = format!("⚙ {} {} {}", call.name, call.arguments, first_line(&outcome.content));
-                writeln!(out, "{}", dim(&line)).ok();
-                messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": outcome.content}));
-                if outcome.is_error {
-                    let count = failures
-                        .entry((call.name.clone(), call.arguments.clone()))
-                        .or_default();
-                    *count += 1;
-                    if *count >= MAX_REPEATED_FAILURES {
-                        return Err(format!(
-                            "stopped: the model repeated a failing `{}` call {MAX_REPEATED_FAILURES} times ({})",
-                            call.name, outcome.content
-                        ));
-                    }
+        for call in &turn.tool_calls {
+            let outcome = execute(context, &call.name, &call.arguments);
+            on_event(
+                context,
+                LoopEvent::Tool {
+                    name: &call.name,
+                    arguments: &call.arguments,
+                    outcome: &outcome,
+                },
+            );
+            messages
+                .push(json!({"role": "tool", "tool_call_id": call.id, "content": outcome.content}));
+            if outcome.is_error {
+                let count = failures
+                    .entry((call.name.clone(), call.arguments.clone()))
+                    .or_default();
+                *count += 1;
+                if *count >= MAX_REPEATED_FAILURES {
+                    return Err(format!(
+                        "stopped: the model repeated a failing `{}` call {MAX_REPEATED_FAILURES} times ({})",
+                        call.name, outcome.content
+                    ));
                 }
             }
         }
-        Err(format!(
-            "stopped after {max_steps} steps without a final answer. Registers:\n{}",
-            context.registers.table()
-        ))
-    })();
-    save_session(context, task, &messages);
-    result
+    }
+    Err(format!(
+        "stopped after {max_steps} steps without a final answer. Registers:\n{}",
+        context.registers.table()
+    ))
 }
 
 /// A copy of the history with the register table added to the last message. The stored
@@ -167,8 +241,12 @@ fn save_session(context: &Context, task: &str, messages: &[Json]) {
     let folder = context.project.sessions_folder();
     let path = folder.join(format!("{}.json", uuid::Uuid::now_v7()));
     let transcript = json!({"task": task, "messages": messages});
-    let saved = Project::create_ignored_folder(&folder)
-        .and_then(|()| std::fs::write(&path, serde_json::to_vec_pretty(&transcript).unwrap_or_default()));
+    let saved = Project::create_ignored_folder(&folder).and_then(|()| {
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&transcript).unwrap_or_default(),
+        )
+    });
     if let Err(error) = saved {
         eprintln!("could not save the session transcript: {error}");
     }
