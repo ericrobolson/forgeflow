@@ -101,6 +101,7 @@ pub enum Ops {
     CropImage,
     /// Put the face in an image onto a person in a video or image, with FaceFusion.
     SwapFace,
+    AnimeStyle,
 }
 
 impl Ops {
@@ -153,6 +154,7 @@ impl Ops {
             Ops::PickBox,
             Ops::CropImage,
             Ops::SwapFace,
+            Ops::AnimeStyle,
         ]
     }
 
@@ -186,6 +188,7 @@ impl Ops {
             Ops::PickBox => "pick-box",
             Ops::CropImage => "crop-image",
             Ops::SwapFace => "swap-face",
+            Ops::AnimeStyle => "anime-style",
             Ops::ListDirectory => "list_directory",
             Ops::ListFiles => "list_files",
             Ops::Summarize => "summarize",
@@ -227,7 +230,8 @@ impl Ops {
             Ops::VideoQuality => "Set make-video's quality: \"draft\" (512×512, quick, for iterating) or \"full\" (the model's resolution, interpolated and upscaled to 1080p).",
             Ops::PickPoints => "Open a window showing an image or video (with a frame slider) and wait for clicks: left-click what to include, right-click what to leave out. Pushes the pick (frame time and points in pixels) as JSON.",
             Ops::PickBox => "Open a window showing an image or video (with a frame slider) and wait for a dragged box, such as around a face. Pushes the pick (frame time and box in pixels) as JSON.",
-            Ops::SwapFace => "Put the face from an image onto a person in a video or image. Args: target (video/image to change), face image (png/jpg/webp, not a video), output path. A directory or \"\" output generates NAME-swapped.<ext>; if several people appear, a window asks which to replace and only that person changes. Uses FaceFusion, installed on first use.",
+            Ops::AnimeStyle => "Render an image or every video frame with AnimeGANv3. Args: input, output, style (in that order). Blank style defaults to hayao; invalid styles list names and descriptions. Styles: hayao, shinkai, arcane (ArcaneGAN), ghibli, sketch, cute, jp-face; 8bit and comic are Hayao-based rendering alternatives. Blank output saves NAME-anime beside input; directory output saves inside it. All filenames have a timestamp prefix, like swap-face. Installs automatically on first use.",
+            Ops::SwapFace => "Swap a reference face onto a target video/image. Args: target, face image, output. Choose a person; only that person changes. FaceFusion auto-installs. Undetected still faces open manual redraw settings using the local edit model.",
             Ops::CropImage => "Save the part of an image (or of the picked video frame) inside a pick-box box as a PNG.",
             Ops::DraftVideo => "Make a draft video from a prompt alone: plans and generates start and end keyframes (saved beside it as NAME-key-N.png) so the characters stay consistent, then animates through them at draft quality for video-seconds. Finish it with finish-video.",
             Ops::FinishVideo => "Upscale a video in the project to 1080p and double its frame rate (smoother motion), saving NAME-finished.mp4 beside it; for finishing a draft.",
@@ -329,9 +333,33 @@ impl Ops {
                 let path = context.project.resolve(&media)?;
                 let mode = if *self == Ops::PickBox { crate::picker::Mode::Box } else { crate::picker::Mode::Points };
                 context.progress(format!("Waiting for the picker window: {prompt}"));
-                let pick = crate::picker::pick(&crate::picker::Request { media: path, prompt, mode, outlines: vec![] })?
+                let pick = crate::picker::pick(&crate::picker::Request { media: path, prompt, mode, outlines: vec![], face_edit: None })?
                     .ok_or("the picker was cancelled")?;
                 context.stack.push(Value::String(serde_json::to_string(&pick).map_err(|e| e.to_string())?));
+            }
+            Ops::AnimeStyle => {
+                let selected = pop(context)?.expect_string()?;
+                let requested = pop(context)?.expect_string()?;
+                let input = pop(context)?.expect_string()?;
+                let selected = crate::anime_style::style(&selected)?;
+                let input = context.project.resolve(&input)?;
+                if !input.is_file() { return Err("anime-style input is not a file".into()); }
+                let video = crate::anime_style::is_video(&input)?;
+                let directory_hint = requested.trim().is_empty() || requested.trim().ends_with('/');
+                let requested = if requested.trim().is_empty() {
+                    input.parent().ok_or("input has no parent")?.to_path_buf()
+                } else { context.project.resolve(&requested)? };
+                let directory = directory_hint || requested.is_dir();
+                let output = crate::anime_style::output_path(&input, &requested, directory, video)?;
+                let saved = output.strip_prefix(&context.project.root).map_err(|_| "output outside project")?.to_string_lossy().into_owned();
+                // Resolve the final generated path too, including any pre-existing symlinks.
+                let output = context.project.resolve(&saved)?;
+                with_gpu_bytes(context, "anime-style", 4_000_000_000, |context| {
+                    crate::anime_style::convert(&input, &output, selected, video, &mut |line| context.progress(line))?;
+                    context.emit(if video { crate::events::Event::Video(saved.clone()) } else { crate::events::Event::Image(saved.clone()) });
+                    Ok(())
+                })?;
+                context.stack.push(Value::String(saved));
             }
             Ops::SwapFace => {
                 let output = pop(context)?.expect_string()?;
@@ -699,6 +727,11 @@ impl Ops {
                 Type::str("media", "image or video path relative to the project root"),
                 Type::str("prompt", "what to ask for, shown in the window, such as \"Click the stunt performer's face\""),
             ],
+            Ops::AnimeStyle => vec![
+                Type::str("input", "source image or video path relative to the project root"),
+                Type::str("output", "output file, directory, or blank for NAME-anime beside input"),
+                Type::str("style", "hayao (default when blank), shinkai, arcane, 8bit, comic, ghibli, sketch, cute, jp-face"),
+            ],
             Ops::SwapFace => vec![
                 Type::str("target", "video or image to change, relative to the project root"),
                 Type::str("face", "image of the face to put on (png, jpg, webp), such as a crop from crop-image"),
@@ -784,7 +817,7 @@ impl Ops {
             Ops::PickPoints => vec![Type::str("points", "the pick as JSON: frame time and points in pixels")],
             Ops::PickBox => vec![Type::str("box", "the pick as JSON: frame time and box in pixels")],
             Ops::CropImage => vec![Type::str("saved_path", "project-relative path of the cropped image")],
-            Ops::SwapFace => vec![Type::str("saved_path", "project-relative path of the result")],
+            Ops::SwapFace | Ops::AnimeStyle => vec![Type::str("saved_path", "project-relative path of the result")],
             Ops::ListDirectory => vec![Type::new("entries", List, "the folder's entries")],
             Ops::ListFiles => vec![Type::new("files", List, "the folder's files")],
             Ops::RegView | Ops::RegSearch | Ops::Grep => vec![Type::str("lines", "numbered lines")],
@@ -1070,6 +1103,7 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
     let stamp = chrono::Local::now().format("%y%m%d%H%M%S").to_string();
     let output = output.with_file_name(format!("{stamp}-{}", output.file_name().unwrap_or_default().to_string_lossy()));
 
+    let workspace = crate::edit_workspace::EditWorkspace::new(&context.project)?;
     // Isolate the source face: box it, then crop it with some surroundings (the detector needs
     // the head around a face to find it) and enlarge small crops for a reliable detection.
     context.progress("Waiting for the picker window: box the face to use");
@@ -1078,22 +1112,19 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
         prompt: "Drag a box around the face to put on".into(),
         mode: crate::picker::Mode::Box,
         outlines: vec![],
+        face_edit: None,
     };
     let pick = crate::picker::pick(&request)?.ok_or("the picker was cancelled")?;
-    let face_stem = face.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-    let face_crop = output.with_file_name(format!("{stamp}-{face_stem}-face.png"));
+    let face_crop = workspace.path.join("reference-face.png");
     let (width, height) = crate::picker::crop_face(&face, &pick, &face_crop, FACE_MARGIN, FACE_MIN_SIDE)?;
-    context.progress(format!("Using the boxed face ({width}×{height}), saved as {}.", face_crop.file_name().unwrap_or_default().to_string_lossy()));
-    if let Ok(relative) = face_crop.strip_prefix(&context.project.root) {
-        context.emit(Event::Image(relative.to_string_lossy().into_owned()));
-    }
+    context.progress(format!("Using the selected reference face ({width}×{height})."));
     let face = face_crop;
     let facefusion = crate::facefusion::ensure(&mut |line| context.progress(line))?;
     // FaceFusion writes the same format it reads, so other video formats go through an mp4
     // copy, used for every step so frame numbers agree.
     let is_mp4 = target.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
     let converted = if is_video && !is_mp4 {
-        let copy = std::env::temp_dir().join(format!("forgeflow-swap-{}.mp4", uuid::Uuid::now_v7()));
+        let copy = workspace.path.join("converted-target.mp4");
         context.progress(format!("Converting {} to mp4 for FaceFusion…", target.file_name().unwrap_or_default().to_string_lossy()));
         to_mp4(&target, &copy)?;
         Some(copy)
@@ -1106,7 +1137,10 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
         let samples = facefusion.faces(&target)?;
         let busiest = samples.iter().max_by_key(|s| s.faces.len()).filter(|s| !s.faces.is_empty());
         let Some(busiest) = busiest else {
-            return Err("no faces found to replace".into());
+            if is_video {
+                return Err("no target face detected. Manual style-preserving region replacement currently supports still images; videos need region tracking.".into());
+            }
+            return manual_face_edit(context, &target, &face, &output, &workspace.path);
         };
         let chosen = if busiest.faces.len() == 1 {
             context.progress("One person in view throughout: replacing every face.");
@@ -1114,7 +1148,7 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
         } else {
             // Show the busiest frame with each face outlined, and ask which to replace.
             let still = if is_video {
-                let still = std::env::temp_dir().join(format!("forgeflow-faces-{}.png", uuid::Uuid::now_v7()));
+                let still = workspace.path.join("target-faces.png");
                 extract_frame(&target, busiest.frame, &still)?;
                 still
             } else {
@@ -1125,6 +1159,7 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
                 prompt: format!("{} faces found: click the one to replace", busiest.faces.len()),
                 mode: crate::picker::Mode::Points,
                 outlines: busiest.faces.clone(),
+                face_edit: None,
             };
             context.progress("Waiting for the picker window: click the face to replace");
             let pick = crate::picker::pick(&request);
@@ -1143,7 +1178,7 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
             Target::Reference { frame: busiest.frame, position, distance: threshold.distance }
         };
         let started = std::time::Instant::now();
-        facefusion.swap(&face, &target, &output, chosen, is_video, &mut |line| context.progress(line))?;
+        facefusion.swap(&face, &target, &output, chosen, is_video, &workspace.path.join("facefusion"), &mut |line| context.progress(line))?;
         context.progress(format!("Swapped in {:.0}s.", started.elapsed().as_secs_f64()));
         // Emit and compute the saved path here, before with_gpu_bytes resumes the
         // llama-server, so the video is registered and its path returned first.
@@ -1159,6 +1194,69 @@ fn swap_face(context: &mut Context, target: &str, face: &str, output: &str) -> R
         let _ = std::fs::remove_file(copy);
     }
     saved
+}
+
+/// Anime/stylized targets without detectable landmarks use a reference-guided edit.
+fn manual_face_edit(context: &mut Context, target: &std::path::Path, reference: &std::path::Path, output: &std::path::Path, work: &std::path::Path) -> Result<String, String> {
+    use crate::events::Event;
+    use crate::picker::FaceEditReply;
+    let config = Config::load(&context.project.folder())?;
+    let model = crate::image_models::edit_model(&config)?;
+    context.progress("No target face detected. Opening the manual face editor: Render previews, then Finish to save.");
+    let settings = crate::picker::FaceEditSettings { steps: model.steps, reference: Some(reference.to_path_buf()), ..Default::default() };
+    let request = crate::picker::Request {
+        media: target.to_path_buf(), prompt: "Box the face itself · Render previews · Finish to keep the result".into(),
+        mode: crate::picker::Mode::Box, outlines: vec![], face_edit: Some(settings),
+    };
+    let original = image::open(target).map_err(|e| e.to_string())?;
+    let mut last_render = None;
+    let mut number = 0;
+    let accepted = crate::picker::face_edit_session(&request, |pick, report| {
+        let settings = pick.face_edit.as_ref().ok_or("missing face edit settings")?;
+        crate::face_edit::validate(pick, settings)?;
+        number += 1;
+        let render_dir = work.join(format!("render-{number}"));
+        std::fs::create_dir_all(&render_dir).map_err(|e| e.to_string())?;
+        std::fs::write(render_dir.join("selection.json"), serde_json::to_vec_pretty(pick).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let crop = render_dir.join("target-context.png");
+        let context_pick = crate::face_edit::context_pick(pick, settings)?;
+        crate::picker::crop(target, &context_pick, &crop)?;
+        let mask = render_dir.join("target-mask.png");
+        crate::face_edit::context_mask(pick, settings)?.save(&mask).map_err(|e| e.to_string())?;
+        let mut selected_model = model.clone();
+        selected_model.steps = settings.steps;
+        let patch = with_gpu_room(context, &selected_model.clone(), |context| {
+            crate::image_gen::LocalImageBackend::new(selected_model)?.inpaint_streaming(&settings.instruction, &[crop.clone(), reference.to_path_buf()], &mask, settings.strength, &render_dir, settings.live_preview, &mut |event| match event {
+                crate::image_gen::EditEvent::Progress(message) => {
+                    context.progress(message.clone());
+                    report(FaceEditReply { status: Some(message), ..Default::default() });
+                }
+                crate::image_gen::EditEvent::Preview(path) => {
+                    if let Ok(preview) = image::open(&path) {
+                        if let Ok(result) = crate::face_edit::composite_context(&original, &preview, pick, settings) {
+                            let preview_path = path.with_file_name(format!("composited-{}", path.file_name().unwrap_or_default().to_string_lossy()));
+                            if result.save(&preview_path).is_ok() { report(FaceEditReply { image: Some(preview_path), ..Default::default() }); }
+                        }
+                    }
+                }
+            })
+        })?;
+        let patch_image = image::load_from_memory(&patch.bytes).map_err(|e| e.to_string())?;
+        let result = crate::face_edit::composite_context(&original, &patch_image, pick, settings)?;
+        let preview = render_dir.join("preview.png");
+        result.save(&preview).map_err(|e| e.to_string())?;
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        result.write_to(&mut bytes, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+        last_render = Some(crate::image_gen::GeneratedImage { bytes: bytes.into_inner() });
+        Ok(preview)
+    })?;
+    if !accepted { return Err("manual face edit cancelled; no output saved".into()); }
+    let image = last_render.ok_or("render a preview before finishing")?;
+    let saved = crate::image_gen::save_image(output, &image)?;
+    let relative = saved.strip_prefix(&context.project.root).map_err(|_| "face edit outside project")?.to_string_lossy().into_owned();
+    context.emit(Event::Image(relative.clone()));
+    context.progress("Face edit saved. Cleaning temporary selections and previews.");
+    Ok(relative)
 }
 
 /// Re-encodes a video as a high-quality H.264 `.mp4`, keeping its audio, on the NVIDIA

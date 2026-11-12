@@ -104,6 +104,9 @@ impl ImageBackend for OpenRouterImageBackend {
     }
 }
 
+/// Updates from an interactive image-edit job.
+pub enum EditEvent { Progress(String), Preview(PathBuf) }
+
 /// Runs stable-diffusion.cpp's `sd-cli` once per image, so the diffusion model is only
 /// resident while generating rather than alongside llama-server for the whole session.
 pub struct LocalImageBackend {
@@ -140,6 +143,122 @@ impl LocalImageBackend {
             size.1
         ));
         self.run(instruction, inputs, size, progress)
+    }
+
+    /// Interactive edit with live sampler messages and decoded step previews.
+    /// All generated files stay in the caller's edit workspace until Finish/Cancel.
+    pub fn edit_streaming(&self, instruction: &str, inputs: &[PathBuf], work: &Path, live_previews: bool, update: &mut dyn FnMut(EditEvent)) -> Result<GeneratedImage, String> {
+        self.edit_streaming_inner(instruction, inputs, None, work, live_previews, update)
+    }
+
+    /// Preserve the first input's unmasked latents throughout sampling, while keeping
+    /// all inputs available as edit references. White mask pixels may change.
+    pub fn inpaint_streaming(&self, instruction: &str, inputs: &[PathBuf], mask: &Path, strength: f32, work: &Path, live_previews: bool, update: &mut dyn FnMut(EditEvent)) -> Result<GeneratedImage, String> {
+        self.edit_streaming_inner(instruction, inputs, Some((mask, strength)), work, live_previews, update)
+    }
+
+    fn edit_streaming_inner(&self, instruction: &str, inputs: &[PathBuf], inpaint: Option<(&Path, f32)>, work: &Path, live_previews: bool, update: &mut dyn FnMut(EditEvent)) -> Result<GeneratedImage, String> {
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+        let first = inputs.first().ok_or("face edit needs a target image")?;
+        if inputs.len() > MAX_EDIT_INPUTS { return Err("too many reference images".into()); }
+        let (width, height) = image::image_dimensions(first).map_err(|e| e.to_string())?;
+        if let Some((mask, strength)) = inpaint {
+            if !strength.is_finite() || !(0.25..=1.0).contains(&strength) { return Err("denoising strength must be between 0.25 and 1".into()); }
+            if image::image_dimensions(mask).map_err(|e| format!("could not read inpainting mask: {e}"))? != (width, height) {
+                return Err("inpainting mask must match the target image dimensions".into());
+            }
+        }
+        let size = fit_area(width, height, self.model.width * self.model.height);
+        std::fs::create_dir_all(work).map_err(|e| e.to_string())?;
+        let mut renderer_log = std::fs::File::create(work.join("renderer.log")).map_err(|e| e.to_string())?;
+        let output = work.join("generated-final.png");
+        let mut args = self.arguments(instruction, &output, inputs, size);
+        if let Some((mask, strength)) = inpaint {
+            // Keep the large edit weights file-backed instead of copying all of them
+            // into RAM while the GPU holds its own working copy.
+            if !args.iter().any(|arg| arg == "--mmap") { args.push("--mmap".into()); }
+            // Avoid sd-cli's implicit centre crop: the compositor maps the complete
+            // generated canvas back to the complete context crop.
+            let init_path = work.join("sampling-target.png");
+            let mask_path = work.join("sampling-mask.png");
+            image::open(first).map_err(|e| e.to_string())?
+                .resize_exact(size.0, size.1, image::imageops::FilterType::Lanczos3)
+                .save(&init_path).map_err(|e| e.to_string())?;
+            image::open(mask).map_err(|e| e.to_string())?
+                .resize_exact(size.0, size.1, image::imageops::FilterType::Nearest)
+                .save(&mask_path).map_err(|e| e.to_string())?;
+            args.extend(["--init-img".into(), init_path.into(), "--mask".into(), mask_path.into(), "--strength".into(), strength.to_string().into()]);
+        }
+        if live_previews {
+            args.extend(["--preview".into(), "vae".into(), "--preview-path".into(), work.join("step-%03d.png").into(), "--preview-interval".into(), "1".into()]);
+        }
+        update(EditEvent::Progress(format!("Loading {} for a {}-step edit…", self.model.id, self.model.steps)));
+        let mut child = Command::new(&self.binary).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().map_err(|e| format!("could not start image edit: {e}"))?;
+        let pid = child.id();
+        crate::server::track_child(pid);
+        let reaper = crate::reaper::watch(pid);
+        let (sender, receiver) = mpsc::channel();
+        let mut readers = Vec::new();
+        let streams: Vec<Box<dyn Read + Send>> = vec![Box::new(child.stdout.take().unwrap()), Box::new(child.stderr.take().unwrap())];
+        for mut stream in streams {
+            let sender = sender.clone();
+            readers.push(std::thread::spawn(move || {
+                let mut buffer = [0; 4096];
+                while let Ok(count) = stream.read(&mut buffer) {
+                    if count == 0 || sender.send(buffer[..count].to_vec()).is_err() { break; }
+                }
+            }));
+        }
+        drop(sender);
+        let mut log = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut last_step = None;
+        let result = (|| {
+            let status = loop {
+                if let Ok(bytes) = receiver.recv_timeout(Duration::from_millis(100)) {
+                    renderer_log.write_all(&bytes).map_err(|e| e.to_string())?;
+                    log.extend(bytes);
+                    if log.len() > 64 * 1024 { log.drain(..log.len() - 32 * 1024); }
+                    let text = String::from_utf8_lossy(&log);
+                    let step = text.split(['\r', '\n']).rev().find_map(|line| sampling_step(line, self.model.steps));
+                    if let Some((step, total)) = step.filter(|step| last_step != Some(*step)) {
+                        update(EditEvent::Progress(format!("Rendering: {step}/{total} steps (~{}%)", step * 100 / total)));
+                        last_step = Some((step, total));
+                    }
+                }
+                if live_previews {
+                    let mut previews: Vec<_> = std::fs::read_dir(work).map_err(|e| e.to_string())?.filter_map(Result::ok)
+                        .map(|entry| entry.path()).filter(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("step-")) && path.extension().is_some_and(|ext| ext == "png")).collect();
+                    previews.sort();
+                    for path in previews {
+                        if !seen.contains(&path) && image::open(&path).is_ok() {
+                            seen.insert(path.clone());
+                            update(EditEvent::Preview(path));
+                        }
+                    }
+                }
+                if let Some(status) = child.try_wait().map_err(|e| e.to_string())? { break status; }
+            };
+            for reader in readers.drain(..) { let _ = reader.join(); }
+            for bytes in receiver.try_iter() {
+                renderer_log.write_all(&bytes).map_err(|e| e.to_string())?;
+                log.extend(bytes);
+            }
+            if !status.success() {
+                let text = String::from_utf8_lossy(&log);
+                return Err(format!("image edit failed: {}", text.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")));
+            }
+            let bytes = std::fs::read(&output).map_err(|e| format!("image edit produced no output: {e}"))?;
+            Ok(GeneratedImage { bytes })
+        })();
+        if result.is_err() { let _ = child.kill(); }
+        let _ = child.wait();
+        for reader in readers { let _ = reader.join(); }
+        crate::server::untrack_child(pid);
+        drop(reaper);
+        result
     }
 
     fn run(&self, prompt: &str, inputs: &[PathBuf], size: (u32, u32), progress: &mut dyn FnMut(String)) -> Result<GeneratedImage, String> {
@@ -225,6 +344,18 @@ impl ImageBackend for LocalImageBackend {
     }
 }
 
+fn sampling_step(line: &str, total: u32) -> Option<(u32, u32)> {
+    if line.contains("generating image:") { return None; }
+    line.split_whitespace().find_map(|word| {
+        let word = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '/');
+        let (step, steps) = word.split_once('/')?;
+        let step: u32 = step.parse().ok()?;
+        let steps: u32 = steps.parse().ok()?;
+        // Img2img strength can shorten the configured sampling schedule.
+        (steps > 0 && steps <= total && step <= steps).then_some((step, steps))
+    })
+}
+
 /// `width`×`height` scaled to about `area` pixels, each side a multiple of 16 as the
 /// diffusion models' latents require.
 pub fn fit_area(width: u32, height: u32, area: u32) -> (u32, u32) {
@@ -282,6 +413,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn progress_accepts_the_shortened_inpainting_schedule() {
+        assert_eq!(sampling_step("2/3 - 0.4it/s", 4), Some((2, 3)));
+        assert_eq!(sampling_step("4/4", 4), Some((4, 4)));
+        assert_eq!(sampling_step("5/3", 4), None);
+        assert_eq!(sampling_step("0/0", 4), None);
+        assert_eq!(sampling_step("Loading 12/60 tensors", 4), None);
+        assert_eq!(sampling_step("[I] generating image: 1/1 - seed 42", 4), None);
+    }
+
+    #[test]
     fn local_arguments_pass_each_file_then_settings() {
         let model = image_models::find("chroma1-hd").unwrap();
         let backend = LocalImageBackend { binary: "sd-cli".into(), model };
@@ -319,5 +460,68 @@ mod tests {
         assert_eq!(fit_area(1024, 1024, 1024 * 1024), (1024, 1024));
         assert_eq!(fit_area(1920, 1080, 1024 * 1024), (1360, 768));
         assert_eq!(fit_area(600, 800, 1024 * 1024), (880, 1184));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn streaming_edit_reports_previews_and_renderer_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("forgeflow-stream-test-{}", uuid::Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let input = root.join("target with spaces.png");
+        image::RgbaImage::from_pixel(16, 16, image::Rgba([50, 100, 150, 255])).save(&input).unwrap();
+        let binary = root.join("fake-sd-cli");
+        std::fs::write(&binary, r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -o) output=$2; shift ;;
+        -r) source=$2; shift ;;
+        --init-img) init=$2; shift ;;
+        --mask) mask=$2; shift ;;
+        --strength) strength=$2; shift ;;
+    esac
+    shift
+done
+if [ -n "$mask" ]; then
+    [ -f "$init" ] && [ -f "$mask" ] && [ "$strength" = "0.75" ] || exit 9
+    printf '%s\n' "$mask" > "$(dirname "$output")/mask-used.txt"
+fi
+cp "$source" "$(dirname "$output")/step-001.png"
+printf '1/4\n' >&2
+sleep 0.3
+cp "$source" "$output"
+"#).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let backend = LocalImageBackend { binary: binary.clone(), model: image_models::find("qwen-image-edit-2511").unwrap() };
+        let work = root.join("render");
+        let mut previews = Vec::new();
+        let mut progress = Vec::new();
+        let result = backend.edit_streaming("keep the target style", &[input.clone()], &work, true, &mut |event| match event {
+            EditEvent::Preview(path) => previews.push(path),
+            EditEvent::Progress(message) => progress.push(message),
+        }).unwrap();
+        assert!(image::load_from_memory(&result.bytes).is_ok());
+        assert_eq!(previews, vec![work.join("step-001.png")]);
+        assert!(progress.iter().any(|message| message.contains("1/4 steps")));
+        // Previews remain available to the window after the renderer exits.
+        assert!(previews[0].is_file());
+        let mask = root.join("mask with spaces.png");
+        image::GrayImage::from_pixel(16, 16, image::Luma([255])).save(&mask).unwrap();
+        let masked_work = root.join("masked-render");
+        backend.inpaint_streaming("keep the target style", &[input.clone()], &mask, 0.75, &masked_work, true, &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read_to_string(masked_work.join("mask-used.txt")).unwrap().trim(), masked_work.join("sampling-mask.png").to_str().unwrap());
+        assert_eq!(image::image_dimensions(masked_work.join("sampling-target.png")).unwrap(), (1024, 1024));
+        assert_eq!(image::image_dimensions(masked_work.join("sampling-mask.png")).unwrap(), (1024, 1024));
+        image::GrayImage::new(8, 8).save(&mask).unwrap();
+        assert!(backend.inpaint_streaming("test", &[input.clone()], &mask, 0.75, &root.join("invalid"), false, &mut |_| {}).is_err());
+        assert!(!root.join("invalid").exists());
+        std::fs::write(&binary, "#!/bin/sh\necho 'renderer test failure' >&2\nexit 7\n").unwrap();
+        let error = backend.edit_streaming("keep the target style", &[input], &root.join("failed"), false, &mut |_| {}).err().expect("renderer should fail");
+        assert!(error.contains("renderer test failure"), "{error}");
     }
 }

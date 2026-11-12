@@ -63,6 +63,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(spec) = std::env::args().nth(2).filter(|_| std::env::args().nth(1).as_deref() == Some(forgeflow::picker::PICK_ARG)) {
         forgeflow::picker::run_window(&spec);
     }
+    if let Some(spec) = std::env::args().nth(2).filter(|_| std::env::args().nth(1).as_deref() == Some(forgeflow::picker::FACE_EDIT_ARG)) {
+        forgeflow::picker::run_face_edit_window(&spec);
+    }
     forgeflow::server::stop_children_on_exit();
     let working_dir = std::env::current_dir()?;
     if !Project::exists() && !util::confirmation("Project not found. Create one?") {

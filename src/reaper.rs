@@ -27,7 +27,7 @@ pub struct Reaper {
 /// Starts a watcher that stops `pid` if this process ends without releasing it. Returns
 /// `None` if the watcher cannot start; the child then relies on normal cleanup alone.
 pub fn watch(pid: u32) -> Option<Reaper> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = crate::util::self_executable().ok()?;
     let mut watcher = Command::new(exe)
         .args([REAP_ARG, &pid.to_string()])
         .stdin(Stdio::piped())

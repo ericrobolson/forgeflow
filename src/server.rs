@@ -175,6 +175,8 @@ pub fn stop_children_on_exit() {
         for pid in children {
             let _ = Command::new("kill").arg(pid.to_string()).status();
         }
+        crate::edit_workspace::cleanup_on_exit();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::terminal::disable_raw_mode();
         eprintln!();
         std::process::exit(130);

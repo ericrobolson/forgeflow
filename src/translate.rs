@@ -35,6 +35,7 @@ pub fn vocabulary() -> Vec<Ops> {
         Ops::VideoSeconds,
         Ops::VideoQuality,
         Ops::SwapFace,
+        Ops::AnimeStyle,
         Ops::PickBox,
         Ops::PickPoints,
         Ops::CropImage,
@@ -540,7 +541,7 @@ fn suggest_messages_at(goal: &str, user_words: &[UserWord], detail: Detail) -> V
 
 /// Example turns placed before the conversation; small models imitate real turns far
 /// better than examples described in the system prompt.
-pub const EXAMPLES: [(&str, &str); 23] = [
+pub const EXAMPLES: [(&str, &str); 25] = [
     ("hi!", r#""Hi! What can I do for you?" print"#),
     ("what can you do?", "help"),
     ("what's in the src folder?", r#""src" list_directory print"#),
@@ -586,6 +587,8 @@ pub const EXAMPLES: [(&str, &str); 23] = [
         "put the face from actors/lead.png onto the person in shots/stunt.mp4 and save it as shots/stunt-lead.mp4",
         r#""shots/stunt.mp4" "actors/lead.png" "shots/stunt-lead.mp4" swap-face"#,
     ),
+    ("convert shots/fight.webm to anime and save as shots/fight-anime.mp4", r#""shots/fight.webm" "shots/fight-anime.mp4" "" anime-style"#),
+    ("render photos/action.jpg in shinkai style as photos/anime.png", r#""photos/action.jpg" "photos/anime.png" "shinkai" anime-style"#),
     ("make a quick video of a gladiator charging across the arena, save it as clips/charge.mp4", r#""clips/charge.mp4" "A gladiator charges across the arena" draft-video"#),
     (
         "in shots/arena.png, make it dusk and add blood spatter on the gladiator's shield",

@@ -210,8 +210,7 @@ impl FaceFusion {
     /// detail independently each frame, which measured as +15% frame-to-frame change in the
     /// face (visible shimmer) against +3% for a 512 px swap alone, at nearly the same
     /// sharpness. Stills cannot flicker, so they get the enhancer's extra crispness.
-    pub fn swap(&self, source: &Path, target: &Path, output: &Path, chosen: Target, is_video: bool, progress: &mut dyn FnMut(String)) -> Result<(), String> {
-        let work = std::env::temp_dir().join(format!("forgeflow-facefusion-{}", uuid::Uuid::now_v7()));
+    pub fn swap(&self, source: &Path, target: &Path, output: &Path, chosen: Target, is_video: bool, work: &Path, progress: &mut dyn FnMut(String)) -> Result<(), String> {
         std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
         let mut args: Vec<std::ffi::OsString> = vec!["run".into(), "headless-run".into(), "-s".into(), source.into(), "-t".into(), target.into(), "-o".into(), output.into()];
         if is_video {
@@ -222,7 +221,7 @@ impl FaceFusion {
         args.extend(["--execution-providers", if self.gpu { "cuda" } else { "cpu" }].map(Into::into));
         // The tracker fills in faces the detector misses for a frame or two, as in motion blur.
         args.extend(["--face-tracker-score", "0.3", "--log-level", "info"].map(Into::into));
-        args.extend(["--temp-path".into(), work.clone().into(), "--jobs-path".into(), work.join("jobs").into()]);
+        args.extend(["--temp-path".into(), work.into(), "--jobs-path".into(), work.join("jobs").into()]);
         match chosen {
             Target::Every => args.extend(["--face-selector-mode", "many"].map(Into::into)),
             Target::Reference { frame, position, distance } => {
@@ -269,7 +268,7 @@ impl FaceFusion {
         let status = child.wait().map_err(|e| e.to_string());
         crate::server::untrack_child(pid);
         drop(reaper);
-        let _ = std::fs::remove_dir_all(&work);
+        let _ = std::fs::remove_dir_all(work);
         let lines: Vec<&str> = log.split(['\r', '\n']).filter(|l| !l.trim().is_empty() && !l.contains('%')).collect();
         let tail = lines[lines.len().saturating_sub(6)..].join("\n");
         let status = status?;

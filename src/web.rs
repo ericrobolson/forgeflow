@@ -845,6 +845,8 @@ fn file(app: &App, request: Request, encoded: &str) -> Result<(), String> {
         Some("webp") => "image/webp",
         Some("mp4") => "video/mp4",
         Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("mkv") => "video/x-matroska",
         _ => return respond(request, Response::from_string("only images and videos are served").with_status_code(403)),
     };
     let project = crate::project::Project { root: app.root.clone() };

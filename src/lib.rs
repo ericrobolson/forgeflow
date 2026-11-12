@@ -1,3 +1,4 @@
+pub mod anime_style;
 pub mod agent;
 pub mod agent_loop;
 pub mod chat;
@@ -31,3 +32,9 @@ pub mod words;
 pub mod user_words;
 pub mod video_gen;
 pub mod workflow;
+
+mod terminal_paths;
+
+pub mod face_edit;
+
+pub mod edit_workspace;

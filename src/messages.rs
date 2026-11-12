@@ -6,7 +6,7 @@ use std::{
 use crossterm::{
     event::{
         self, Event as KeyInput, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags, EnableBracketedPaste, DisableBracketedPaste,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
@@ -830,12 +830,15 @@ struct RawMode;
 impl RawMode {
     fn enter() -> io::Result<Self> {
         enable_raw_mode()?;
-        Ok(Self)
+        let mode = Self;
+        execute!(io::stdout(), EnableBracketedPaste)?;
+        Ok(mode)
     }
 }
 
 impl Drop for RawMode {
     fn drop(&mut self) {
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
         let _ = disable_raw_mode();
     }
 }
@@ -869,6 +872,7 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
     // Other terminals ignore the request and retain the trailing-backslash
     // continuation fallback.
     let _keyboard_enhancement = KeyboardEnhancement::try_enable();
+    let project_root = conversation.lock().expect("conversation lock").context.project.root.clone();
     let mut stdout = io::stdout();
     let mut buffer = String::new();
     let mut current_line = String::new();
@@ -913,6 +917,8 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
                             redraw_input(&mut stdout, &mut rows, false, &current_line, cursor)?;
                         } else {
                             buffer.push_str(&current_line);
+                            // Drops sent as ordinary keystrokes lack a Paste event.
+                            buffer = crate::terminal_paths::normalize(&buffer, &project_root);
                             let submitted = buffer.clone();
                             rows.leave();
                             report_submission(&mut buffer, submission, true, conversation)?;
@@ -975,7 +981,7 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
                         history_position = None;
                         redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
-                    KeyCode::Left if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
+                    KeyCode::Left if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::META | KeyModifiers::SUPER) => {
                         cursor = move_left_word(&current_line, cursor);
                         redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
@@ -983,7 +989,7 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
                         cursor -= 1;
                         redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
-                    KeyCode::Right if key.modifiers.intersects(KeyModifiers::META | KeyModifiers::SUPER) => {
+                    KeyCode::Right if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::META | KeyModifiers::SUPER) => {
                         cursor = move_right_word(&current_line, cursor);
                         redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
                     }
@@ -1016,8 +1022,9 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
                 stdout.flush()?;
             }
             KeyInput::Paste(text) => {
-                // The input is one screen line per buffer line; pasted line breaks become spaces.
-                insert_at_cursor(&mut current_line, &mut cursor, &text.replace("\r\n", " ").replace(['\n', '\r'], " "));
+                let prefix = format!("{}{}", buffer, &current_line[..char_byte_index(&current_line, cursor)]);
+                let text = crate::terminal_paths::paste(&text, &prefix, &project_root);
+                insert_at_cursor(&mut current_line, &mut cursor, &text);
                 history_position = None;
                 redraw_input(&mut stdout, &mut rows, buffer.is_empty(), &current_line, cursor)?;
             }
@@ -1030,6 +1037,17 @@ fn run_terminal(conversation: &SharedConversation) -> Result<(), Box<dyn Error>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_navigation_stops_at_word_boundaries_and_handles_unicode() {
+        let text = "one  顔 two";
+        assert_eq!(move_left_word(text, text.chars().count()), 7);
+        assert_eq!(move_left_word(text, 7), 5);
+        assert_eq!(move_right_word(text, 0), 5);
+        assert_eq!(move_right_word(text, 5), 7);
+        assert_eq!(move_left_word(text, 0), 0);
+        assert_eq!(move_right_word(text, 100), text.chars().count());
+    }
 
     #[test]
     fn long_input_lines_wrap_onto_rows() {
